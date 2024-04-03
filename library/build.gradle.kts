@@ -41,6 +41,8 @@ kotlin {
             implementation(compose.components.uiToolingPreview)
 
             implementation(libs.kotlinx.collections.immutable)
+
+            implementation(libs.napier)
         }
 
         commonTest.dependencies {
