@@ -86,11 +86,12 @@ fun Modifier.zoom(
                 val maxOffsetX = abs(curLayoutBounds.width * (newZoomScale - 1)) / 2
                 val maxOffsetY = abs(curLayoutBounds.height * (newZoomScale - 1)) / 2
                 val oldPanOffset = panOffset
+                val scaledPanOffset = pan * newZoomScale
                 val newPanOffset = Offset(
-                    (oldPanOffset.x + pan.x - adjustOffset.x)
+                    (oldPanOffset.x + scaledPanOffset.x - adjustOffset.x)
                         .coerceAtLeast(-maxOffsetX)
                         .coerceAtMost(maxOffsetX),
-                    (oldPanOffset.y + pan.y - adjustOffset.y)
+                    (oldPanOffset.y + scaledPanOffset.y - adjustOffset.y)
                         .coerceAtLeast(-maxOffsetY)
                         .coerceAtMost(maxOffsetY)
                 )
