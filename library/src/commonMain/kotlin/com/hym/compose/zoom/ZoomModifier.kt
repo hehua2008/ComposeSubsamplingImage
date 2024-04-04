@@ -11,6 +11,7 @@ import androidx.compose.foundation.gestures.calculatePan
 import androidx.compose.foundation.gestures.calculateZoom
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.Stable
 import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
@@ -56,15 +57,37 @@ private val DefaultFalseArray = { BooleanArray(4) { false } }
 @Stable
 class ZoomState(
     private val scope: CoroutineScope,
-    private val flingSpec: DecayAnimationSpec<Velocity>,
-    val minZoomScale: Float = MIN_ZOOM_SCALE,
-    val maxZoomScale: Float = MAX_ZOOM_SCALE,
-    val doubleClickZoomScale: Float = DOUBLE_CLICK_ZOOM_SCALE
+    private val flingSpec: DecayAnimationSpec<Velocity>
 ) {
-    init {
+    var minZoomScale: Float = MIN_ZOOM_SCALE
+        private set
+    var maxZoomScale: Float = MIN_ZOOM_SCALE // MAX_ZOOM_SCALE
+        private set
+    var doubleClickZoomScale: Float = DOUBLE_CLICK_ZOOM_SCALE
+        private set
+
+    fun setScaleLimits(
+        minZoomScale: Float = this.minZoomScale,
+        maxZoomScale: Float = this.maxZoomScale,
+        doubleClickZoomScale: Float = this.doubleClickZoomScale
+    ): ZoomState {
+        require(minZoomScale <= this.minZoomScale) {
+            "The new minZoomScale($minZoomScale) must <= the old minZoomScale(${this.minZoomScale}"
+        }
+        require(maxZoomScale >= this.maxZoomScale) {
+            "The new maxZoomScale($maxZoomScale) must >= the old maxZoomScale(${this.maxZoomScale}"
+        }
+        require(doubleClickZoomScale != 1f) {
+            "The new doubleClickZoomScale($doubleClickZoomScale) must not be 1f"
+        }
         require(0f < minZoomScale && minZoomScale <= doubleClickZoomScale && doubleClickZoomScale <= maxZoomScale) {
             "Invalid arguments! Please check: 0f < minZoomScale=$minZoomScale <= doubleClickZoomScale=$doubleClickZoomScale <= maxZoomScale=$maxZoomScale"
         }
+
+        this.minZoomScale = minZoomScale
+        this.maxZoomScale = maxZoomScale
+        this.doubleClickZoomScale = doubleClickZoomScale
+        return this
     }
 
     var layoutBounds by mutableStateOf(Rect.Zero)
@@ -160,8 +183,8 @@ class ZoomState(
 /**
  * Creates a [ZoomState] that is remembered across compositions.
  *
- * Changes to the value of minZoomScale, maxZoomScale and doubleClickZoomScale will **NOT** result
- * in the state being recreated or changed in any way if it has already been created.
+ * Changes to the value of minZoomScale, maxZoomScale and doubleClickZoomScale will take effect and
+ * will **NOT** result in the state being recreated.
  */
 @Stable
 @Composable
@@ -172,9 +195,13 @@ fun rememberZoomState(
 ): ZoomState {
     val scope = rememberCoroutineScope()
     val flingSpec = rememberSplineBasedDecay<Velocity>()
-    return remember {
-        ZoomState(scope, flingSpec, minZoomScale, maxZoomScale, doubleClickZoomScale)
+    val zoomState = remember {
+        ZoomState(scope, flingSpec)
     }
+    LaunchedEffect(minZoomScale, maxZoomScale, doubleClickZoomScale) {
+        zoomState.setScaleLimits(minZoomScale, maxZoomScale, doubleClickZoomScale)
+    }
+    return zoomState
 }
 
 @Stable
