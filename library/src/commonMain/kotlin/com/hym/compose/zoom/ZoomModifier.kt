@@ -1,6 +1,7 @@
 package com.hym.compose.zoom
 
 import androidx.compose.animation.core.Animatable
+import androidx.compose.animation.core.DecayAnimationSpec
 import androidx.compose.animation.rememberSplineBasedDecay
 import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.gestures.awaitFirstDown
@@ -10,14 +11,13 @@ import androidx.compose.foundation.gestures.calculatePan
 import androidx.compose.foundation.gestures.calculateZoom
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.Stable
 import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
-import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Modifier
@@ -37,6 +37,7 @@ import androidx.compose.ui.unit.toSize
 import androidx.compose.ui.util.fastAny
 import androidx.compose.ui.util.fastForEach
 import com.hym.compose.utils.performFling
+import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.launch
 import kotlin.math.abs
@@ -52,144 +53,167 @@ private const val MAX_ZOOM_SCALE = 4f
 private const val DOUBLE_CLICK_ZOOM_SCALE = 2f
 private val DefaultFalseArray = { BooleanArray(4) { false } }
 
+@Stable
+class ZoomState(
+    private val scope: CoroutineScope,
+    private val flingSpec: DecayAnimationSpec<Velocity>,
+    val minZoomScale: Float = MIN_ZOOM_SCALE,
+    val maxZoomScale: Float = MAX_ZOOM_SCALE,
+    val doubleClickZoomScale: Float = DOUBLE_CLICK_ZOOM_SCALE
+) {
+    init {
+        require(0f < minZoomScale && minZoomScale <= doubleClickZoomScale && doubleClickZoomScale <= maxZoomScale) {
+            "Invalid arguments! Please check: 0f < minZoomScale=$minZoomScale <= doubleClickZoomScale=$doubleClickZoomScale <= maxZoomScale=$maxZoomScale"
+        }
+    }
+
+    var layoutBounds by mutableStateOf(Rect.Zero)
+        internal set
+
+    var panOffset by mutableStateOf(Offset.Zero)
+        internal set
+
+    var zoomScale by mutableFloatStateOf(1f)
+        internal set
+
+    private val panRestriction by derivedStateOf {
+        val diff = layoutBounds.size * abs(zoomScale - 1)
+        Rect(-diff.width / 2, -diff.height / 2, diff.width / 2, diff.height / 2)
+    }
+
+    internal val leftTopRightBottomEdgeReached by derivedStateOf {
+        val curPanOffset = panOffset
+        val curPanRestriction = panRestriction
+        booleanArrayOf(
+            curPanOffset.x <= curPanRestriction.left,
+            curPanOffset.y <= curPanRestriction.top,
+            curPanOffset.x >= curPanRestriction.right,
+            curPanOffset.y >= curPanRestriction.bottom
+        )
+    }
+
+    internal fun onGesture(centroid: Offset, pan: Offset, zoom: Float, isGesture: Boolean) {
+        val boundsCenter = layoutBounds.center
+        val oldZoomScale = zoomScale
+        val beforeScaledCentroid = (centroid - boundsCenter) * oldZoomScale
+
+        val newZoomScale = (if (isGesture) (oldZoomScale * zoom) else zoom)
+            .coerceAtLeast(minZoomScale)
+            .coerceAtMost(maxZoomScale)
+        if (oldZoomScale != newZoomScale) {
+            zoomScale = newZoomScale
+        }
+
+        val afterScaledCentroid = (centroid - boundsCenter) * newZoomScale
+        val adjustOffset = afterScaledCentroid - beforeScaledCentroid
+
+        val oldPanOffset = panOffset
+        val scaledPanOffset = pan * newZoomScale
+        val curPanRestriction = panRestriction
+        val newPanOffset = Offset(
+            (oldPanOffset.x + scaledPanOffset.x - adjustOffset.x)
+                .coerceAtLeast(curPanRestriction.left)
+                .coerceAtMost(curPanRestriction.right),
+            (oldPanOffset.y + scaledPanOffset.y - adjustOffset.y)
+                .coerceAtLeast(curPanRestriction.top)
+                .coerceAtMost(curPanRestriction.bottom)
+        )
+
+        if (oldPanOffset != newPanOffset) {
+            panOffset = newPanOffset
+        }
+    }
+
+    private val zoomAnimation = Animatable(1f)
+
+    internal val onDoubleTap: (Offset) -> Unit = { offset ->
+        val curScale = zoomScale
+        val targetZoomScale = if (curScale == 1f) doubleClickZoomScale else 1f
+        scope.launch {
+            zoomAnimation.snapTo(curScale)
+            zoomAnimation.animateTo(targetZoomScale) {
+                onGesture(offset, Offset.Zero, value, false)
+            }
+        }
+    }
+
+    internal var flingVelocity by mutableStateOf(Velocity.Zero)
+
+    init {
+        scope.launch {
+            snapshotFlow { flingVelocity }
+                .collectLatest { velocity ->
+                    if (velocity == Velocity.Zero) return@collectLatest
+                    performFling(velocity, flingSpec) { offset ->
+                        if (offset != Offset.Zero) {
+                            onGesture(Offset.Zero, offset, zoomScale, false)
+                        }
+                        offset
+                    }
+                    // Reset flingVelocity to zero because snapshotFlow will auto distinctUntilChanged
+                    flingVelocity = Velocity.Zero
+                }
+        }
+    }
+}
+
 /**
- * **NOTE**: Composable function modifiers are never skipped
+ * Creates a [ZoomState] that is remembered across compositions.
  *
- * Composable factory modifiers are never skipped because composable functions that have return
- * values cannot be skipped. This means your modifier function will be called on every
- * recomposition, which may be expensive if it recomposes frequently.
+ * Changes to the value of minZoomScale, maxZoomScale and doubleClickZoomScale will **NOT** result
+ * in the state being recreated or changed in any way if it has already been created.
  */
+@Stable
 @Composable
-fun Modifier.zoom(
+fun rememberZoomState(
     minZoomScale: Float = MIN_ZOOM_SCALE,
     maxZoomScale: Float = MAX_ZOOM_SCALE,
-    doubleClickZoomScale: Float = DOUBLE_CLICK_ZOOM_SCALE,
+    doubleClickZoomScale: Float = DOUBLE_CLICK_ZOOM_SCALE
+): ZoomState {
+    val scope = rememberCoroutineScope()
+    val flingSpec = rememberSplineBasedDecay<Velocity>()
+    return remember {
+        ZoomState(scope, flingSpec, minZoomScale, maxZoomScale, doubleClickZoomScale)
+    }
+}
+
+@Stable
+fun Modifier.zoom(
+    zoomState: ZoomState,
     onClick: ((Offset) -> Unit)? = null,
     onLongClick: ((Offset) -> Unit)? = null
 ): Modifier {
-    require(0f < minZoomScale && minZoomScale <= doubleClickZoomScale && doubleClickZoomScale <= maxZoomScale) {
-        "Invalid arguments! Please check: 0f < minZoomScale=$minZoomScale <= doubleClickZoomScale=$doubleClickZoomScale <= maxZoomScale=$maxZoomScale"
-    }
-    val updatedMinZoomScale by rememberUpdatedState(minZoomScale)
-    val updatedMaxZoomScale by rememberUpdatedState(maxZoomScale)
-    val updatedDoubleClickZoomScale by rememberUpdatedState(doubleClickZoomScale)
-    var layoutBounds by remember { mutableStateOf(Rect.Zero) }
-    var panOffset by remember { mutableStateOf(Offset.Zero) }
-    var zoomScale by remember { mutableFloatStateOf(1f) }
-    val zoomAnimation = remember { Animatable(1f) }
-    val panRestriction by remember {
-        derivedStateOf {
-            val diff = layoutBounds.size * abs(zoomScale - 1)
-            Rect(-diff.width / 2, -diff.height / 2, diff.width / 2, diff.height / 2)
-        }
-    }
-    val leftTopRightBottomEdgeReached by remember {
-        derivedStateOf {
-            val curPanOffset = panOffset
-            val curPanRestriction = panRestriction
-            booleanArrayOf(
-                curPanOffset.x <= curPanRestriction.left,
-                curPanOffset.y <= curPanRestriction.top,
-                curPanOffset.x >= curPanRestriction.right,
-                curPanOffset.y >= curPanRestriction.bottom
-            )
-        }
-    }
-    val scope = rememberCoroutineScope()
-
-    val onGesture: (centroid: Offset, pan: Offset, zoom: Float, isGesture: Boolean) -> Unit =
-        remember {
-            { centroid, pan, zoom, isGesture ->
-                val boundsCenter = layoutBounds.center
-                val oldZoomScale = zoomScale
-                val beforeScaledCentroid = (centroid - boundsCenter) * oldZoomScale
-
-                val newZoomScale = (if (isGesture) (oldZoomScale * zoom) else zoom)
-                    .coerceAtLeast(updatedMinZoomScale)
-                    .coerceAtMost(updatedMaxZoomScale)
-                if (oldZoomScale != newZoomScale) {
-                    zoomScale = newZoomScale
-                }
-
-                val afterScaledCentroid = (centroid - boundsCenter) * newZoomScale
-                val adjustOffset = afterScaledCentroid - beforeScaledCentroid
-
-                val oldPanOffset = panOffset
-                val scaledPanOffset = pan * newZoomScale
-                val curPanRestriction = panRestriction
-                val newPanOffset = Offset(
-                    (oldPanOffset.x + scaledPanOffset.x - adjustOffset.x)
-                        .coerceAtLeast(curPanRestriction.left)
-                        .coerceAtMost(curPanRestriction.right),
-                    (oldPanOffset.y + scaledPanOffset.y - adjustOffset.y)
-                        .coerceAtLeast(curPanRestriction.top)
-                        .coerceAtMost(curPanRestriction.bottom)
-                )
-
-                if (oldPanOffset != newPanOffset) {
-                    panOffset = newPanOffset
-                }
-            }
-        }
-
-    val onDoubleTap: (Offset) -> Unit = remember {
-        { offset ->
-            val curScale = zoomScale
-            val targetZoomScale = if (curScale == 1f) updatedDoubleClickZoomScale else 1f
-            scope.launch {
-                zoomAnimation.snapTo(curScale)
-                zoomAnimation.animateTo(targetZoomScale) {
-                    onGesture(offset, Offset.Zero, value, false)
-                }
-            }
-        }
-    }
-
-    val flingSpec = rememberSplineBasedDecay<Velocity>()
-    var flingVelocity by remember { mutableStateOf(Velocity.Zero) }
-
-    LaunchedEffect(null) {
-        snapshotFlow { flingVelocity }
-            .collectLatest { velocity ->
-                if (velocity == Velocity.Zero) return@collectLatest
-                performFling(velocity, flingSpec) { offset ->
-                    if (offset != Offset.Zero) {
-                        onGesture(Offset.Zero, offset, zoomScale, false)
-                    }
-                    offset
-                }
-                // Reset flingVelocity to zero because snapshotFlow will auto distinctUntilChanged
-                flingVelocity = Velocity.Zero
-            }
-    }
-
     return this
         .onGloballyPositioned {
-            layoutBounds = it.size
+            zoomState.layoutBounds = it.size
                 .toSize()
                 .toRect()
         }
         .clipToBounds() // set clip = true in graphicsLayer block have no effect, I have no idea why
         .graphicsLayer {
-            val curScale = zoomScale
+            val curScale = zoomState.zoomScale
             scaleX = curScale
             scaleY = curScale
-            val curPanOffset = panOffset
+            val curPanOffset = zoomState.panOffset
             translationX = curPanOffset.x
             translationY = curPanOffset.y
         }
-        .pointerInput(onGesture) {
+        .pointerInput(zoomState) {
             detectZoomGestures(
-                leftTopRightBottomEdgeReached = { leftTopRightBottomEdgeReached.copyOf() },
+                leftTopRightBottomEdgeReached = { zoomState.leftTopRightBottomEdgeReached.copyOf() },
                 onGestureEnd = { velocity ->
-                    flingVelocity = velocity
+                    zoomState.flingVelocity = velocity
                 }
             ) { centroid, pan, zoom ->
-                onGesture(centroid, pan, zoom, true)
+                zoomState.onGesture(centroid, pan, zoom, true)
             }
         }
-        .pointerInput(onClick, onLongClick, onDoubleTap) {
-            detectTapGestures(onTap = onClick, onLongPress = onLongClick, onDoubleTap = onDoubleTap)
+        .pointerInput(onClick, onLongClick, zoomState) {
+            detectTapGestures(
+                onTap = onClick,
+                onLongPress = onLongClick,
+                onDoubleTap = zoomState.onDoubleTap
+            )
         }
 }
 
