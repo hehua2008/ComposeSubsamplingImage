@@ -1,6 +1,7 @@
 package com.hym.compose.zoom
 
 import androidx.compose.animation.core.Animatable
+import androidx.compose.animation.rememberSplineBasedDecay
 import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.gestures.calculateCentroid
@@ -9,6 +10,7 @@ import androidx.compose.foundation.gestures.calculatePan
 import androidx.compose.foundation.gestures.calculateZoom
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
@@ -17,6 +19,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clipToBounds
 import androidx.compose.ui.geometry.Offset
@@ -26,10 +29,15 @@ import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.input.pointer.PointerInputScope
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.input.pointer.positionChanged
+import androidx.compose.ui.input.pointer.util.VelocityTracker
+import androidx.compose.ui.input.pointer.util.addPointerInputChange
 import androidx.compose.ui.layout.onGloballyPositioned
+import androidx.compose.ui.unit.Velocity
 import androidx.compose.ui.unit.toSize
 import androidx.compose.ui.util.fastAny
 import androidx.compose.ui.util.fastForEach
+import com.hym.compose.utils.performFling
+import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.launch
 import kotlin.math.abs
 
@@ -137,6 +145,24 @@ fun Modifier.zoom(
         }
     }
 
+    val flingSpec = rememberSplineBasedDecay<Velocity>()
+    var flingVelocity by remember { mutableStateOf(Velocity.Zero) }
+
+    LaunchedEffect(null) {
+        snapshotFlow { flingVelocity }
+            .collectLatest { velocity ->
+                if (velocity == Velocity.Zero) return@collectLatest
+                performFling(velocity, flingSpec) { offset ->
+                    if (offset != Offset.Zero) {
+                        onGesture(Offset.Zero, offset, zoomScale, false)
+                    }
+                    offset
+                }
+                // Reset flingVelocity to zero because snapshotFlow will auto distinctUntilChanged
+                flingVelocity = Velocity.Zero
+            }
+    }
+
     return this
         .onGloballyPositioned {
             layoutBounds = it.size
@@ -155,6 +181,9 @@ fun Modifier.zoom(
         .pointerInput(onGesture) {
             detectZoomGestures(
                 leftTopRightBottomEdgeReached = { leftTopRightBottomEdgeReached.copyOf() },
+                onGestureEnd = { velocity ->
+                    flingVelocity = velocity
+                }
             ) { centroid, pan, zoom ->
                 onGesture(centroid, pan, zoom, true)
             }
@@ -166,19 +195,29 @@ fun Modifier.zoom(
 
 suspend fun PointerInputScope.detectZoomGestures(
     leftTopRightBottomEdgeReached: () -> BooleanArray = DefaultFalseArray,
+    onGestureEnd: ((Velocity) -> Unit)? = null,
     onGesture: (centroid: Offset, pan: Offset, zoom: Float) -> Unit
 ) {
+    val maximumVelocity =
+        Velocity(viewConfiguration.maximumFlingVelocity, viewConfiguration.maximumFlingVelocity)
+    val velocityTracker = VelocityTracker()
+
     awaitEachGesture {
         var zoom = 1f
         var pan = Offset.Zero
         var pastTouchSlop = false
         val touchSlop = viewConfiguration.touchSlop
+        velocityTracker.resetTracking()
 
         awaitFirstDown(requireUnconsumed = false)
         do {
             val event = awaitPointerEvent()
             val canceled = event.changes.fastAny { it.isConsumed }
             if (!canceled) {
+                event.changes.fastForEach {
+                    velocityTracker.addPointerInputChange(it)
+                }
+
                 val zoomChange = event.calculateZoom()
                 val panChange = event.calculatePan()
 
@@ -228,5 +267,8 @@ suspend fun PointerInputScope.detectZoomGestures(
                 }
             }
         } while (!canceled && event.changes.fastAny { it.pressed })
+
+        val velocity = velocityTracker.calculateVelocity(maximumVelocity)
+        onGestureEnd?.invoke(velocity)
     }
 }
