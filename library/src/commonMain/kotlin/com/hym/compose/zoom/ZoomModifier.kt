@@ -1,5 +1,7 @@
 package com.hym.compose.zoom
 
+import androidx.compose.animation.core.Animatable
+import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.gestures.detectTransformGestures
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
@@ -18,6 +20,7 @@ import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.unit.toSize
+import kotlinx.coroutines.launch
 import kotlin.math.abs
 
 /**
@@ -28,6 +31,7 @@ private const val TAG = "ZoomModifier"
 
 private const val MIN_ZOOM_SCALE = 1f
 private const val MAX_ZOOM_SCALE = 4f
+private const val DOUBLE_CLICK_ZOOM_SCALE = 2f
 
 /**
  * **NOTE**: Composable function modifiers are never skipped
@@ -39,40 +43,31 @@ private const val MAX_ZOOM_SCALE = 4f
 @Composable
 fun Modifier.zoom(
     minZoomScale: Float = MIN_ZOOM_SCALE,
-    maxZoomScale: Float = MAX_ZOOM_SCALE
+    maxZoomScale: Float = MAX_ZOOM_SCALE,
+    doubleClickZoomScale: Float = DOUBLE_CLICK_ZOOM_SCALE,
+    onClick: ((Offset) -> Unit)? = null,
+    onLongClick: ((Offset) -> Unit)? = null
 ): Modifier {
-    require(0f < minZoomScale && minZoomScale <= maxZoomScale) {
-        "Invalid arguments! Please check: 0f < minZoomScale=$minZoomScale <= maxZoomScale=$maxZoomScale"
+    require(0f < minZoomScale && minZoomScale <= doubleClickZoomScale && doubleClickZoomScale <= maxZoomScale) {
+        "Invalid arguments! Please check: 0f < minZoomScale=$minZoomScale <= doubleClickZoomScale=$doubleClickZoomScale <= maxZoomScale=$maxZoomScale"
     }
     val updatedMinZoomScale by rememberUpdatedState(minZoomScale)
     val updatedMaxZoomScale by rememberUpdatedState(maxZoomScale)
+    val updatedDoubleClickZoomScale by rememberUpdatedState(doubleClickZoomScale)
     var layoutBounds by remember { mutableStateOf(Rect.Zero) }
     var panOffset by remember { mutableStateOf(Offset.Zero) }
     var zoomScale by remember { mutableFloatStateOf(1f) }
+    val zoomAnimation = remember { Animatable(1f) }
     val scope = rememberCoroutineScope()
 
-    return this
-        .onGloballyPositioned {
-            layoutBounds = it.size
-                .toSize()
-                .toRect()
-        }
-        .clipToBounds() // set clip = true in graphicsLayer block have no effect, I have no idea why
-        .graphicsLayer {
-            val curScale = zoomScale
-            scaleX = curScale
-            scaleY = curScale
-            val curPanOffset = panOffset
-            translationX = curPanOffset.x
-            translationY = curPanOffset.y
-        }
-        .pointerInput(null) {
-            detectTransformGestures { centroid, pan, zoom, rotation ->
+    val onGesture: (centroid: Offset, pan: Offset, zoom: Float, rotation: Float, isGesture: Boolean) -> Unit =
+        remember {
+            { centroid, pan, zoom, rotation, isGesture ->
                 val boundsCenter = layoutBounds.center
                 val oldZoomScale = zoomScale
                 val beforeScaledCentroid = (centroid - boundsCenter) * oldZoomScale
 
-                val newZoomScale = (oldZoomScale * zoom)
+                val newZoomScale = (if (isGesture) (oldZoomScale * zoom) else zoom)
                     .coerceAtLeast(updatedMinZoomScale)
                     .coerceAtMost(updatedMaxZoomScale)
                 if (oldZoomScale != newZoomScale) {
@@ -100,5 +95,42 @@ fun Modifier.zoom(
                     panOffset = newPanOffset
                 }
             }
+        }
+
+    val onDoubleTap: (Offset) -> Unit = remember {
+        { offset ->
+            val curScale = zoomScale
+            val targetZoomScale = if (curScale == 1f) updatedDoubleClickZoomScale else 1f
+            scope.launch {
+                zoomAnimation.snapTo(curScale)
+                zoomAnimation.animateTo(targetZoomScale) {
+                    onGesture(offset, Offset.Zero, value, 0f, false)
+                }
+            }
+        }
+    }
+
+    return this
+        .onGloballyPositioned {
+            layoutBounds = it.size
+                .toSize()
+                .toRect()
+        }
+        .clipToBounds() // set clip = true in graphicsLayer block have no effect, I have no idea why
+        .graphicsLayer {
+            val curScale = zoomScale
+            scaleX = curScale
+            scaleY = curScale
+            val curPanOffset = panOffset
+            translationX = curPanOffset.x
+            translationY = curPanOffset.y
+        }
+        .pointerInput(onGesture) {
+            detectTransformGestures { centroid, pan, zoom, rotation ->
+                onGesture(centroid, pan, zoom, rotation, true)
+            }
+        }
+        .pointerInput(onClick, onLongClick, onDoubleTap) {
+            detectTapGestures(onTap = onClick, onLongPress = onLongClick, onDoubleTap = onDoubleTap)
         }
 }
