@@ -214,9 +214,13 @@ class ZoomState(
 
     private val zoomAnimation = Animatable(1f)
 
+    /**
+     * **NOTE**: There is a bug that detectZoomGestures may swallow double click events initially.
+     * I hava no idea how to fix now.
+     */
     internal val onDoubleTap: (Offset) -> Unit = { offset ->
         val curScale = zoomScale
-        val (targetZoomScale, centroid) = if (curScale == 1f) {
+        val (targetZoomScale, centroid) = if (abs(curScale - 1f) < 0.05f) {
             doubleClickZoomScale to offset
         } else {
             val resetToDefaultCentroid = panOffset / (1f - curScale) + layoutBounds.center
@@ -238,10 +242,10 @@ class ZoomState(
                 .collectLatest { velocity ->
                     if (velocity == Velocity.Zero) return@collectLatest
                     performFling(velocity, flingSpec) { offset ->
-                        if (offset != Offset.Zero) {
+                        if (abs(offset.x) > 1f || abs(offset.y) > 1f) {
                             onGesture(Offset.Zero, offset, 1f, SOURCE_FLING)
-                        }
-                        offset
+                            offset
+                        } else Offset.Zero
                     }
                     // Reset flingVelocity to zero because snapshotFlow will auto distinctUntilChanged
                     flingVelocity = Velocity.Zero
