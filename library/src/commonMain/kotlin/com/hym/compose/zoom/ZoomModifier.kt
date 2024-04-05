@@ -25,6 +25,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clipToBounds
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Rect
+import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.geometry.toRect
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.input.pointer.PointerInputScope
@@ -93,6 +94,31 @@ class ZoomState(
     var layoutBounds by mutableStateOf(Rect.Zero)
         internal set
 
+    var contentAspectRatio by mutableFloatStateOf(0f)
+        internal set
+
+    val contentBounds by derivedStateOf {
+        val curContentAspectRatio = contentAspectRatio
+        val curLayoutBounds = layoutBounds
+        if (curContentAspectRatio <= 0f || curLayoutBounds.isEmpty) {
+            curLayoutBounds
+        } else {
+            val assumeContentWidth = curLayoutBounds.height * curContentAspectRatio
+            if (curLayoutBounds.width < assumeContentWidth) {
+                val contentHeight = curLayoutBounds.width / curContentAspectRatio
+                val diffHeight = curLayoutBounds.height - contentHeight
+                curLayoutBounds.run {
+                    copy(top = top + diffHeight / 2, bottom = bottom - diffHeight / 2)
+                }
+            } else {
+                val diffWidth = curLayoutBounds.width - assumeContentWidth
+                curLayoutBounds.run {
+                    copy(left = left + diffWidth / 2, right = right - diffWidth / 2)
+                }
+            }
+        }
+    }
+
     var panOffset by mutableStateOf(Offset.Zero)
         internal set
 
@@ -100,7 +126,23 @@ class ZoomState(
         internal set
 
     private val panRestriction by derivedStateOf {
-        val diff = layoutBounds.size * abs(zoomScale - 1)
+        val curLayoutBounds = layoutBounds
+        if (curLayoutBounds.isEmpty) return@derivedStateOf Rect.Zero
+        val curScale = zoomScale
+        val scaledContentWidth = contentBounds.width * curScale
+        val scaledContentHeight = contentBounds.height * curScale
+        val diff =
+            if (curLayoutBounds.width / curLayoutBounds.height < scaledContentWidth / scaledContentHeight) {
+                Size(
+                    abs(curLayoutBounds.width * (curScale - 1)),
+                    abs(curLayoutBounds.height - scaledContentHeight)
+                )
+            } else {
+                Size(
+                    abs(curLayoutBounds.width - scaledContentWidth),
+                    abs(curLayoutBounds.height * (curScale - 1))
+                )
+            }
         Rect(-diff.width / 2, -diff.height / 2, diff.width / 2, diff.height / 2)
     }
 
@@ -183,12 +225,13 @@ class ZoomState(
 /**
  * Creates a [ZoomState] that is remembered across compositions.
  *
- * Changes to the value of minZoomScale, maxZoomScale and doubleClickZoomScale will take effect and
- * will **NOT** result in the state being recreated.
+ * Changes to the value of contentAspectRatio, minZoomScale, maxZoomScale and doubleClickZoomScale
+ * will take effect and will **NOT** result in the state being recreated.
  */
 @Stable
 @Composable
 fun rememberZoomState(
+    contentAspectRatio: Float = 0f,
     minZoomScale: Float = MIN_ZOOM_SCALE,
     maxZoomScale: Float = MAX_ZOOM_SCALE,
     doubleClickZoomScale: Float = DOUBLE_CLICK_ZOOM_SCALE
@@ -197,6 +240,9 @@ fun rememberZoomState(
     val flingSpec = rememberSplineBasedDecay<Velocity>()
     val zoomState = remember {
         ZoomState(scope, flingSpec)
+    }
+    LaunchedEffect(contentAspectRatio) {
+        zoomState.contentAspectRatio = contentAspectRatio
     }
     LaunchedEffect(minZoomScale, maxZoomScale, doubleClickZoomScale) {
         zoomState.setScaleLimits(minZoomScale, maxZoomScale, doubleClickZoomScale)
