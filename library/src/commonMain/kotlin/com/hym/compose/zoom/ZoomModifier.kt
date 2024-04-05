@@ -4,6 +4,7 @@ import androidx.compose.animation.core.Animatable
 import androidx.compose.animation.core.DecayAnimationSpec
 import androidx.compose.animation.core.Spring
 import androidx.compose.animation.core.SpringSpec
+import androidx.compose.animation.core.VectorConverter
 import androidx.compose.animation.rememberSplineBasedDecay
 import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.gestures.awaitFirstDown
@@ -42,10 +43,17 @@ import androidx.compose.ui.unit.toSize
 import androidx.compose.ui.util.fastAll
 import androidx.compose.ui.util.fastAny
 import androidx.compose.ui.util.fastForEach
+import com.hym.compose.utils.Logger
 import com.hym.compose.utils.calculateScaledRect
 import com.hym.compose.utils.performFling
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.cancelAndJoin
+import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.collectLatest
+import kotlinx.coroutines.job
 import kotlinx.coroutines.launch
 import kotlin.math.abs
 
@@ -65,9 +73,11 @@ class ZoomState(
     private val flingSpec: DecayAnimationSpec<Velocity>
 ) {
     companion object {
+        // Priority: Gesture(Zoom/Pan) > DoubleTap > AnimateCenter > Fling
         internal const val SOURCE_GESTURE = 1
         internal const val SOURCE_DOUBLE_TAP = 2
-        internal const val SOURCE_FLING = 3
+        internal const val SOURCE_ANIMATE_CENTER = 3
+        internal const val SOURCE_FLING = 4
     }
 
     var minZoomScale: Float = MIN_ZOOM_SCALE
@@ -143,7 +153,9 @@ class ZoomState(
         val scaledContentHeight = contentBounds.height * curScale
         val isFillWidth = scaledContentWidth >= curLayoutBounds.width
         val isFillHeight = scaledContentHeight >= curLayoutBounds.height
-        val diff = if (isFillWidth && isFillHeight) {
+        val diff = if (isGestureZooming || centerAnimationJob != null) {
+            curLayoutBounds.size * abs(2 * curScale)
+        } else if (isFillWidth && isFillHeight) {
             if (curLayoutBounds.width / curLayoutBounds.height < scaledContentWidth / scaledContentHeight) {
                 Size(
                     abs(curLayoutBounds.width * (curScale - 1)),
@@ -223,6 +235,9 @@ class ZoomState(
 
         val oldPanOffset = panOffset
         val scaledPanOffset = pan * newZoomScale
+        if (oldZoomScale != newZoomScale && source == SOURCE_GESTURE) {
+            isGestureZooming = true // Set this before reading panRestriction
+        }
         val curPanRestriction = panRestriction
         val newPanOffset = Offset(
             (oldPanOffset.x + scaledPanOffset.x - adjustOffset.x).let {
@@ -284,6 +299,7 @@ class ZoomState(
                 )
             }
             scope.launch {
+                stopAnimateToCenter()
                 zoomAnimation.snapTo(curScale)
                 zoomAnimation.animateTo(
                     targetValue = targetScale, animationSpec = scaleSpringSpec
@@ -299,6 +315,7 @@ class ZoomState(
     }
 
     private suspend fun animateToDefault() {
+        stopAnimateToCenter()
         val curScale = zoomScale
         val resetToDefaultCentroid = panOffset / (1f - curScale) + layoutBounds.center
         zoomAnimation.snapTo(curScale)
@@ -307,9 +324,109 @@ class ZoomState(
         }
     }
 
+    internal var isGestureZooming by mutableStateOf(false)
+
+    private var centerAnimationJob by mutableStateOf<Job?>(null)
+
+    private val centerAnimation = Animatable(Offset.Zero, Offset.Companion.VectorConverter)
+
+    private val motionSpringSpec = SpringSpec<Offset>(
+        dampingRatio = Spring.DampingRatioLowBouncy, stiffness = Spring.StiffnessLow
+    )
+
+    private suspend fun stopAnimateToCenter() {
+        centerAnimation.stop()
+        centerAnimationJob?.let {
+            if (!it.isCancelled && !it.isCompleted) {
+                try {
+                    it.cancelAndJoin()
+                } catch (e: CancellationException) {
+                    // ignore
+                }
+            }
+            centerAnimationJob = null
+        }
+    }
+
+    private suspend fun startAnimateToCenter() {
+        centerAnimation.stop()
+        centerAnimationJob?.cancel()
+
+        centerAnimationJob = scope.launch {
+            delay(300) // start centerAnimation 300ms after ending gesture zoom
+
+            val curLayoutBounds = layoutBounds
+            val curPanOffset = panOffset
+            val scaledContentBounds = contentBounds.calculateScaledRect(zoomScale)
+                .translate(curPanOffset)
+            val targetPanOffset = scaledContentBounds.run {
+                val leftDiff = left - curLayoutBounds.left
+                val rightDiff = right - curLayoutBounds.right
+                val topDiff = top - curLayoutBounds.top
+                val bottomDiff = bottom - curLayoutBounds.bottom
+                Offset(
+                    if ((leftDiff < 0 && rightDiff < 0) || (leftDiff > 0 && rightDiff > 0)) {
+                        if (width >= curLayoutBounds.width) {
+                            // align right
+                            if (abs(rightDiff) < abs(leftDiff)) (curLayoutBounds.width - width) / 2
+                            // align left
+                            else -(curLayoutBounds.width - width) / 2
+                        } else 0f // align horizontal center
+                    } else if (leftDiff > 0 && rightDiff < 0) {
+                        0f // align horizontal center
+                    } else { // leftDiff < 0 && rightDiff > 0
+                        curPanOffset.x
+                    },
+                    if ((topDiff < 0 && bottomDiff < 0) || (topDiff > 0 && bottomDiff > 0)) {
+                        if (height >= curLayoutBounds.height) {
+                            // align bottom
+                            if (abs(bottomDiff) < abs(topDiff)) (curLayoutBounds.height - height) / 2
+                            // align top
+                            else -(curLayoutBounds.height - height) / 2
+                        } else 0f // align vertical center
+                    } else if (topDiff > 0 && bottomDiff < 0) {
+                        0f // align vertical center
+                    } else { // topDiff < 0 && bottomDiff > 0
+                        curPanOffset.y
+                    }
+                )
+            }
+            val currentJob = currentCoroutineContext().job
+            if (curPanOffset == targetPanOffset) {
+                if (centerAnimationJob === currentJob) centerAnimationJob = null
+                return@launch
+            }
+            try {
+                centerAnimation.snapTo(curPanOffset)
+                centerAnimation.animateTo(
+                    targetValue = targetPanOffset, animationSpec = motionSpringSpec
+                ) {
+                    if (!currentJob.isActive) return@animateTo
+                    panOffset = value
+                }
+                if (centerAnimationJob === currentJob) centerAnimationJob = null
+            } catch (e: CancellationException) {
+                Logger.d(TAG, "animateToCenter was cancelled")
+            } catch (e: Exception) {
+                if (centerAnimationJob === currentJob) centerAnimationJob = null
+            }
+        }
+    }
+
     internal var flingVelocity by mutableStateOf(Velocity.Zero)
 
     init {
+        scope.launch {
+            snapshotFlow { isGestureZooming }
+                .collectLatest {
+                    if (it) {
+                        stopAnimateToCenter()
+                    } else {
+                        startAnimateToCenter()
+                    }
+                }
+        }
+
         scope.launch {
             snapshotFlow { flingVelocity }
                 .collectLatest { velocity ->
@@ -381,6 +498,7 @@ fun Modifier.zoom(
                 onPreZoom = { zoomChange -> zoomState.onPreZoom(zoomChange) },
                 onPrePan = { panChange -> zoomState.onPrePan(panChange) },
                 onGestureEnd = { velocity ->
+                    zoomState.isGestureZooming = false
                     zoomState.flingVelocity = velocity
                 }
             ) { centroid, pan, zoom ->
