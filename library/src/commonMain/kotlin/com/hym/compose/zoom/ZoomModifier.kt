@@ -60,6 +60,12 @@ class ZoomState(
     private val scope: CoroutineScope,
     private val flingSpec: DecayAnimationSpec<Velocity>
 ) {
+    companion object {
+        internal const val SOURCE_GESTURE = 1
+        internal const val SOURCE_DOUBLE_TAP = 2
+        internal const val SOURCE_FLING = 3
+    }
+
     var minZoomScale: Float = MIN_ZOOM_SCALE
         private set
     var maxZoomScale: Float = MIN_ZOOM_SCALE // MAX_ZOOM_SCALE
@@ -131,7 +137,9 @@ class ZoomState(
         val curScale = zoomScale
         val scaledContentWidth = contentBounds.width * curScale
         val scaledContentHeight = contentBounds.height * curScale
-        val diff =
+        val isFillWidth = scaledContentWidth >= curLayoutBounds.width
+        val isFillHeight = scaledContentHeight >= curLayoutBounds.height
+        val diff = if (isFillWidth && isFillHeight) {
             if (curLayoutBounds.width / curLayoutBounds.height < scaledContentWidth / scaledContentHeight) {
                 Size(
                     abs(curLayoutBounds.width * (curScale - 1)),
@@ -143,26 +151,41 @@ class ZoomState(
                     abs(curLayoutBounds.height * (curScale - 1))
                 )
             }
+        } else if (isFillWidth) { // isFillHeight.not()
+            Size(curLayoutBounds.width * abs(curScale - 1), 0f)
+        } else if (isFillHeight) { // isFillWidth.not()
+            Size(0f, curLayoutBounds.height * abs(curScale - 1))
+        } else { // isFillWidth.not() && isFillHeight.not()
+            Size.Zero
+        }
         Rect(-diff.width / 2, -diff.height / 2, diff.width / 2, diff.height / 2)
     }
 
     internal val leftTopRightBottomEdgeReached by derivedStateOf {
         val curPanOffset = panOffset
         val curPanRestriction = panRestriction
+        val curLayoutBounds = layoutBounds
+        val curScale = zoomScale
+        val scaledContentWidth = contentBounds.width * curScale
+        val scaledContentHeight = contentBounds.height * curScale
+        val isFillWidth = scaledContentWidth >= curLayoutBounds.width
+        val isFillHeight = scaledContentHeight >= curLayoutBounds.height
         booleanArrayOf(
-            curPanOffset.x <= curPanRestriction.left,
-            curPanOffset.y <= curPanRestriction.top,
-            curPanOffset.x >= curPanRestriction.right,
-            curPanOffset.y >= curPanRestriction.bottom
+            curPanOffset.x <= curPanRestriction.left && isFillWidth,
+            curPanOffset.y <= curPanRestriction.top && isFillHeight,
+            curPanOffset.x >= curPanRestriction.right && isFillWidth,
+            curPanOffset.y >= curPanRestriction.bottom && isFillHeight
         )
     }
 
-    internal fun onGesture(centroid: Offset, pan: Offset, zoom: Float, isGesture: Boolean) {
+    internal fun onGesture(
+        centroid: Offset, pan: Offset, zoom: Float, source: Int = SOURCE_GESTURE
+    ) {
         val boundsCenter = layoutBounds.center
         val oldZoomScale = zoomScale
         val beforeScaledCentroid = (centroid - boundsCenter) * oldZoomScale
 
-        val newZoomScale = (if (isGesture) (oldZoomScale * zoom) else zoom)
+        val newZoomScale = (if (source == SOURCE_DOUBLE_TAP) zoom else (oldZoomScale * zoom))
             .coerceAtLeast(minZoomScale)
             .coerceAtMost(maxZoomScale)
         if (oldZoomScale != newZoomScale) {
@@ -193,11 +216,16 @@ class ZoomState(
 
     internal val onDoubleTap: (Offset) -> Unit = { offset ->
         val curScale = zoomScale
-        val targetZoomScale = if (curScale == 1f) doubleClickZoomScale else 1f
+        val (targetZoomScale, centroid) = if (curScale == 1f) {
+            doubleClickZoomScale to offset
+        } else {
+            val resetToDefaultCentroid = panOffset / (1f - curScale) + layoutBounds.center
+            1f to resetToDefaultCentroid
+        }
         scope.launch {
             zoomAnimation.snapTo(curScale)
             zoomAnimation.animateTo(targetZoomScale) {
-                onGesture(offset, Offset.Zero, value, false)
+                onGesture(centroid, Offset.Zero, value, SOURCE_DOUBLE_TAP)
             }
         }
     }
@@ -211,7 +239,7 @@ class ZoomState(
                     if (velocity == Velocity.Zero) return@collectLatest
                     performFling(velocity, flingSpec) { offset ->
                         if (offset != Offset.Zero) {
-                            onGesture(Offset.Zero, offset, zoomScale, false)
+                            onGesture(Offset.Zero, offset, 1f, SOURCE_FLING)
                         }
                         offset
                     }
@@ -278,7 +306,7 @@ fun Modifier.zoom(
                     zoomState.flingVelocity = velocity
                 }
             ) { centroid, pan, zoom ->
-                zoomState.onGesture(centroid, pan, zoom, true)
+                zoomState.onGesture(centroid, pan, zoom)
             }
         }
         .pointerInput(onClick, onLongClick, zoomState) {
