@@ -220,17 +220,26 @@ class ZoomState(
      */
     internal val onDoubleTap: (Offset) -> Unit = { offset ->
         val curScale = zoomScale
-        val (targetZoomScale, centroid) = if (abs(curScale - 1f) < 0.05f) {
-            doubleClickZoomScale to offset
-        } else {
-            val resetToDefaultCentroid = panOffset / (1f - curScale) + layoutBounds.center
-            1f to resetToDefaultCentroid
-        }
-        scope.launch {
-            zoomAnimation.snapTo(curScale)
-            zoomAnimation.animateTo(targetZoomScale) {
-                onGesture(centroid, Offset.Zero, value, SOURCE_DOUBLE_TAP)
+        if (abs(curScale - 1f) < 0.05f) {
+            scope.launch {
+                zoomAnimation.snapTo(curScale)
+                zoomAnimation.animateTo(doubleClickZoomScale) {
+                    onGesture(offset, Offset.Zero, value, SOURCE_DOUBLE_TAP)
+                }
             }
+        } else {
+            scope.launch {
+                animateToDefault()
+            }
+        }
+    }
+
+    private suspend fun animateToDefault() {
+        val curScale = zoomScale
+        val resetToDefaultCentroid = panOffset / (1f - curScale) + layoutBounds.center
+        zoomAnimation.snapTo(curScale)
+        zoomAnimation.animateTo(1f) {
+            onGesture(resetToDefaultCentroid, Offset.Zero, value, SOURCE_DOUBLE_TAP)
         }
     }
 
