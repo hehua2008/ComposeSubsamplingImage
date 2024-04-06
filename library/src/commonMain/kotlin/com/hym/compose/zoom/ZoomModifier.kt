@@ -2,6 +2,8 @@ package com.hym.compose.zoom
 
 import androidx.compose.animation.core.Animatable
 import androidx.compose.animation.core.DecayAnimationSpec
+import androidx.compose.animation.core.Spring
+import androidx.compose.animation.core.SpringSpec
 import androidx.compose.animation.rememberSplineBasedDecay
 import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.gestures.awaitFirstDown
@@ -214,6 +216,9 @@ class ZoomState(
 
     private val zoomAnimation = Animatable(1f)
 
+    private val scaleSpringSpec =
+        SpringSpec(stiffness = Spring.StiffnessMediumLow, visibilityThreshold = 0.001f)
+
     /**
      * **NOTE**: There is a bug that detectZoomGestures may swallow double click events initially.
      * I hava no idea how to fix now.
@@ -223,7 +228,9 @@ class ZoomState(
         if (abs(curScale - 1f) < 0.05f) {
             scope.launch {
                 zoomAnimation.snapTo(curScale)
-                zoomAnimation.animateTo(doubleClickZoomScale) {
+                zoomAnimation.animateTo(
+                    targetValue = doubleClickZoomScale, animationSpec = scaleSpringSpec
+                ) {
                     onGesture(offset, Offset.Zero, value, SOURCE_DOUBLE_TAP)
                 }
             }
@@ -238,7 +245,7 @@ class ZoomState(
         val curScale = zoomScale
         val resetToDefaultCentroid = panOffset / (1f - curScale) + layoutBounds.center
         zoomAnimation.snapTo(curScale)
-        zoomAnimation.animateTo(1f) {
+        zoomAnimation.animateTo(targetValue = 1f, animationSpec = scaleSpringSpec) {
             onGesture(resetToDefaultCentroid, Offset.Zero, value, SOURCE_DOUBLE_TAP)
         }
     }
