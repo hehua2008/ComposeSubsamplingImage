@@ -40,6 +40,7 @@ import androidx.compose.ui.unit.Velocity
 import androidx.compose.ui.unit.toSize
 import androidx.compose.ui.util.fastAny
 import androidx.compose.ui.util.fastForEach
+import com.hym.compose.utils.calculateScaledRect
 import com.hym.compose.utils.performFling
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.flow.collectLatest
@@ -222,12 +223,14 @@ class ZoomState(
         val scaledPanOffset = pan * newZoomScale
         val curPanRestriction = panRestriction
         val newPanOffset = Offset(
-            (oldPanOffset.x + scaledPanOffset.x - adjustOffset.x)
-                .coerceAtLeast(curPanRestriction.left)
-                .coerceAtMost(curPanRestriction.right),
-            (oldPanOffset.y + scaledPanOffset.y - adjustOffset.y)
-                .coerceAtLeast(curPanRestriction.top)
-                .coerceAtMost(curPanRestriction.bottom)
+            (oldPanOffset.x + scaledPanOffset.x - adjustOffset.x).let {
+                if (source == SOURCE_DOUBLE_TAP) it
+                else it.coerceAtLeast(curPanRestriction.left).coerceAtMost(curPanRestriction.right)
+            },
+            (oldPanOffset.y + scaledPanOffset.y - adjustOffset.y).let {
+                if (source == SOURCE_DOUBLE_TAP) it
+                else it.coerceAtLeast(curPanRestriction.top).coerceAtMost(curPanRestriction.bottom)
+            }
         )
 
         if (oldPanOffset != newPanOffset) {
@@ -247,12 +250,43 @@ class ZoomState(
     internal val onDoubleTap: (Offset) -> Unit = { offset ->
         val curScale = zoomScale
         if (abs(curScale - 1f) < 0.05f) {
+            val curLayoutBounds = layoutBounds
+            val curContentBounds = contentBounds
+            val targetScale = doubleClickZoomScale
+            val scaledContentBounds = curContentBounds.calculateScaledRect(targetScale, offset)
+            val adjustedCentroid = scaledContentBounds.run {
+                val boundsCenter = curLayoutBounds.center
+                val leftDiff = left - curLayoutBounds.left
+                val rightDiff = right - curLayoutBounds.right
+                val topDiff = top - curLayoutBounds.top
+                val bottomDiff = bottom - curLayoutBounds.bottom
+                Offset(
+                    if (width <= curLayoutBounds.width) {
+                        boundsCenter.x
+                    } else if (leftDiff < 0 && rightDiff < 0 || leftDiff > 0 && rightDiff > 0) {
+                        if (offset.x < boundsCenter.x) {
+                            (curLayoutBounds.left - curContentBounds.left * targetScale) / (1 - targetScale)
+                        } else {
+                            (curLayoutBounds.right - curContentBounds.right * targetScale) / (1 - targetScale)
+                        }
+                    } else offset.x,
+                    if (height <= curLayoutBounds.height) {
+                        boundsCenter.y
+                    } else if (topDiff < 0 && bottomDiff < 0 || topDiff > 0 && bottomDiff > 0) {
+                        if (offset.y < boundsCenter.y) {
+                            (curLayoutBounds.top - curContentBounds.top * targetScale) / (1 - targetScale)
+                        } else {
+                            (curLayoutBounds.bottom - curContentBounds.bottom * targetScale) / (1 - targetScale)
+                        }
+                    } else offset.y
+                )
+            }
             scope.launch {
                 zoomAnimation.snapTo(curScale)
                 zoomAnimation.animateTo(
-                    targetValue = doubleClickZoomScale, animationSpec = scaleSpringSpec
+                    targetValue = targetScale, animationSpec = scaleSpringSpec
                 ) {
-                    onGesture(offset, Offset.Zero, value, SOURCE_DOUBLE_TAP)
+                    onGesture(adjustedCentroid, Offset.Zero, value, SOURCE_DOUBLE_TAP)
                 }
             }
         } else {
