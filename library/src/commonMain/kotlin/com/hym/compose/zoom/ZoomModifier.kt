@@ -55,7 +55,6 @@ private const val TAG = "ZoomModifier"
 private const val MIN_ZOOM_SCALE = 1f
 private const val MAX_ZOOM_SCALE = 4f
 private const val DOUBLE_CLICK_ZOOM_SCALE = 2f
-private val DefaultFalseArray = { BooleanArray(4) { false } }
 
 @Stable
 class ZoomState(
@@ -163,20 +162,42 @@ class ZoomState(
         Rect(-diff.width / 2, -diff.height / 2, diff.width / 2, diff.height / 2)
     }
 
-    internal val leftTopRightBottomEdgeReached by derivedStateOf {
+    internal fun onPreZoom(availableZoomChange: Float): Float {
+        if (availableZoomChange == 1f) return 1f // Consider if will accept pan change
+        val curScale = zoomScale
+        return if (curScale > minZoomScale && availableZoomChange < 1f) {
+            availableZoomChange.coerceAtLeast(minZoomScale / curScale)
+        } else if (curScale < maxZoomScale && availableZoomChange > 1f) {
+            availableZoomChange.coerceAtMost(maxZoomScale / curScale)
+        } else {
+            1f // Will not accept zoom change
+        }
+    }
+
+    internal fun onPrePan(availablePanChange: Offset): Offset {
+        if (availablePanChange == Offset.Zero) return Offset.Zero
+        val curScale = zoomScale
+        if (curScale <= 1f) return Offset.Zero // Will not accept pan when zoomScale <= 1f
         val curPanOffset = panOffset
         val curPanRestriction = panRestriction
         val curLayoutBounds = layoutBounds
-        val curScale = zoomScale
         val scaledContentWidth = contentBounds.width * curScale
         val scaledContentHeight = contentBounds.height * curScale
-        val isFillWidth = scaledContentWidth >= curLayoutBounds.width
-        val isFillHeight = scaledContentHeight >= curLayoutBounds.height
-        booleanArrayOf(
-            curPanOffset.x <= curPanRestriction.left && isFillWidth,
-            curPanOffset.y <= curPanRestriction.top && isFillHeight,
-            curPanOffset.x >= curPanRestriction.right && isFillWidth,
-            curPanOffset.y >= curPanRestriction.bottom && isFillHeight
+        return Offset(
+            if (scaledContentWidth < curLayoutBounds.width) {
+                0f // Will not accept horizontal pan
+            } else {
+                availablePanChange.x
+                    .coerceAtLeast(curPanRestriction.left - curPanOffset.x)
+                    .coerceAtMost(curPanRestriction.right - curPanOffset.x)
+            },
+            if (scaledContentHeight < curLayoutBounds.height) {
+                0f // Will not accept vertical pan
+            } else {
+                availablePanChange.y
+                    .coerceAtLeast(curPanRestriction.top - curPanOffset.y)
+                    .coerceAtMost(curPanRestriction.bottom - curPanOffset.y)
+            }
         )
     }
 
@@ -321,7 +342,8 @@ fun Modifier.zoom(
         }
         .pointerInput(zoomState) {
             detectZoomGestures(
-                leftTopRightBottomEdgeReached = { zoomState.leftTopRightBottomEdgeReached.copyOf() },
+                onPreZoom = { zoomChange -> zoomState.onPreZoom(zoomChange) },
+                onPrePan = { panChange -> zoomState.onPrePan(panChange) },
                 onGestureEnd = { velocity ->
                     zoomState.flingVelocity = velocity
                 }
@@ -339,7 +361,8 @@ fun Modifier.zoom(
 }
 
 suspend fun PointerInputScope.detectZoomGestures(
-    leftTopRightBottomEdgeReached: () -> BooleanArray = DefaultFalseArray,
+    onPreZoom: (Float) -> Float = { zoomChange -> zoomChange },
+    onPrePan: (Offset) -> Offset = { panChange -> panChange },
     onGestureEnd: ((Velocity) -> Unit)? = null,
     onGesture: (centroid: Offset, pan: Offset, zoom: Float) -> Unit
 ) {
@@ -381,27 +404,23 @@ suspend fun PointerInputScope.detectZoomGestures(
                     }
                 }
 
-                val edgeReached = leftTopRightBottomEdgeReached()
-                val cantPanX =
-                    (edgeReached[0] && panChange.x < 0) || (edgeReached[2] && panChange.x > 0)
-                val cantPanY =
-                    (edgeReached[1] && panChange.y < 0) || (edgeReached[3] && panChange.y > 0)
+                val preZoomConsume = onPreZoom(zoomChange)
+                val prePanConsume = onPrePan(panChange)
                 val absX = abs(panChange.x)
                 val absY = abs(panChange.y)
 
-                if (zoomChange <= 1f && ((cantPanX && absX > absY) || (cantPanY && absY > absX))) {
+                if (preZoomConsume == 1f &&
+                    ((abs(prePanConsume.x) < 0.5f && absX > absY) ||
+                            (abs(prePanConsume.y) < 0.5f && absY > absX))
+                ) {
                     // Not consume
                 } else {
                     if (pastTouchSlop) {
                         val centroid = event.calculateCentroid(useCurrent = false)
-                        val adjustedPanChange = Offset(
-                            if (cantPanX) 0f else panChange.x,
-                            if (cantPanY) 0f else panChange.y
-                        )
-                        if (zoomChange != 1f ||
-                            adjustedPanChange != Offset.Zero
+                        if (preZoomConsume != 1f ||
+                            prePanConsume != Offset.Zero
                         ) {
-                            onGesture(centroid, adjustedPanChange, zoomChange)
+                            onGesture(centroid, prePanConsume, preZoomConsume)
                         }
                     }
                     event.changes.fastForEach {
