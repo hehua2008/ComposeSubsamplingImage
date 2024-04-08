@@ -31,6 +31,7 @@ import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.geometry.toRect
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.input.pointer.PointerInputScope
+import androidx.compose.ui.input.pointer.changedToUpIgnoreConsumed
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.input.pointer.positionChanged
 import androidx.compose.ui.input.pointer.util.VelocityTracker
@@ -38,6 +39,7 @@ import androidx.compose.ui.input.pointer.util.addPointerInputChange
 import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.unit.Velocity
 import androidx.compose.ui.unit.toSize
+import androidx.compose.ui.util.fastAll
 import androidx.compose.ui.util.fastAny
 import androidx.compose.ui.util.fastForEach
 import com.hym.compose.utils.calculateScaledRect
@@ -414,57 +416,59 @@ suspend fun PointerInputScope.detectZoomGestures(
         awaitFirstDown(requireUnconsumed = false)
         do {
             val event = awaitPointerEvent()
+            val pointerUp = event.changes.fastAll { it.changedToUpIgnoreConsumed() }
+            if (pointerUp) break
             val canceled = event.changes.fastAny { it.isConsumed }
-            if (!canceled) {
-                event.changes.fastForEach {
-                    velocityTracker.addPointerInputChange(it)
-                }
+            if (canceled) break
 
-                val zoomChange = event.calculateZoom()
-                val panChange = event.calculatePan()
+            event.changes.fastForEach {
+                velocityTracker.addPointerInputChange(it)
+            }
 
-                if (!pastTouchSlop) {
-                    zoom *= zoomChange
-                    pan += panChange
+            val zoomChange = event.calculateZoom()
+            val panChange = event.calculatePan()
 
-                    val centroidSize = event.calculateCentroidSize(useCurrent = false)
-                    val zoomMotion = abs(1 - zoom) * centroidSize
-                    val panMotion = pan.getDistance()
+            if (!pastTouchSlop) {
+                zoom *= zoomChange
+                pan += panChange
 
-                    if (zoomMotion > touchSlop ||
-                        panMotion > touchSlop
-                    ) {
-                        pastTouchSlop = true
-                    }
-                }
+                val centroidSize = event.calculateCentroidSize(useCurrent = false)
+                val zoomMotion = abs(1 - zoom) * centroidSize
+                val panMotion = pan.getDistance()
 
-                val preZoomConsume = onPreZoom(zoomChange)
-                val prePanConsume = onPrePan(panChange)
-                val absX = abs(panChange.x)
-                val absY = abs(panChange.y)
-
-                if (preZoomConsume == 1f &&
-                    ((abs(prePanConsume.x) < 0.5f && absX > absY) ||
-                            (abs(prePanConsume.y) < 0.5f && absY > absX))
+                if (zoomMotion > touchSlop ||
+                    panMotion > touchSlop
                 ) {
-                    // Not consume
-                } else {
-                    if (pastTouchSlop) {
-                        val centroid = event.calculateCentroid(useCurrent = false)
-                        if (preZoomConsume != 1f ||
-                            prePanConsume != Offset.Zero
-                        ) {
-                            onGesture(centroid, prePanConsume, preZoomConsume)
-                        }
+                    pastTouchSlop = true
+                }
+            }
+
+            val preZoomConsume = onPreZoom(zoomChange)
+            val prePanConsume = onPrePan(panChange)
+            val absX = abs(panChange.x)
+            val absY = abs(panChange.y)
+
+            if (preZoomConsume == 1f &&
+                ((abs(prePanConsume.x) < 0.5f && absX > absY) ||
+                        (abs(prePanConsume.y) < 0.5f && absY > absX))
+            ) {
+                // Not consume
+            } else {
+                if (pastTouchSlop) {
+                    val centroid = event.calculateCentroid(useCurrent = false)
+                    if (preZoomConsume != 1f ||
+                        prePanConsume != Offset.Zero
+                    ) {
+                        onGesture(centroid, prePanConsume, preZoomConsume)
                     }
-                    event.changes.fastForEach {
-                        if (it.positionChanged()) {
-                            it.consume()
-                        }
+                }
+                event.changes.fastForEach {
+                    if (it.positionChanged()) {
+                        it.consume()
                     }
                 }
             }
-        } while (!canceled && event.changes.fastAny { it.pressed })
+        } while (event.changes.fastAny { it.pressed })
 
         val velocity = velocityTracker.calculateVelocity(maximumVelocity)
         onGestureEnd?.invoke(velocity)
