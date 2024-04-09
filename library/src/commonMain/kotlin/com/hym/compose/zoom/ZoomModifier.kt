@@ -153,7 +153,7 @@ class ZoomState(
         val scaledContentHeight = contentBounds.height * curScale
         val isFillWidth = scaledContentWidth >= curLayoutBounds.width
         val isFillHeight = scaledContentHeight >= curLayoutBounds.height
-        val diff = if (isGestureZooming || centerAnimationJob != null) {
+        val diff = if (isGestureZooming || centerAnimationJob != null || zoomAnimationJob != null) {
             curLayoutBounds.size * abs(2 * curScale)
         } else if (isFillWidth && isFillHeight) {
             if (curLayoutBounds.width / curLayoutBounds.height < scaledContentWidth / scaledContentHeight) {
@@ -219,6 +219,20 @@ class ZoomState(
     internal fun onGesture(
         centroid: Offset, pan: Offset, zoom: Float, source: Int = SOURCE_GESTURE
     ) {
+        when (source) {
+            SOURCE_GESTURE -> {
+                stopZoomAnimation()
+            }
+
+            SOURCE_ANIMATE_CENTER -> {
+                if (zoomAnimationJob != null) return
+            }
+
+            SOURCE_FLING -> {
+                if (zoomAnimationJob != null || centerAnimationJob != null) return
+            }
+        }
+
         val boundsCenter = layoutBounds.center
         val oldZoomScale = zoomScale
         val beforeScaledCentroid = (centroid - boundsCenter) * oldZoomScale
@@ -240,14 +254,12 @@ class ZoomState(
         }
         val curPanRestriction = panRestriction
         val newPanOffset = Offset(
-            (oldPanOffset.x + scaledPanOffset.x - adjustOffset.x).let {
-                if (source == SOURCE_DOUBLE_TAP) it
-                else it.coerceAtLeast(curPanRestriction.left).coerceAtMost(curPanRestriction.right)
-            },
-            (oldPanOffset.y + scaledPanOffset.y - adjustOffset.y).let {
-                if (source == SOURCE_DOUBLE_TAP) it
-                else it.coerceAtLeast(curPanRestriction.top).coerceAtMost(curPanRestriction.bottom)
-            }
+            (oldPanOffset.x + scaledPanOffset.x - adjustOffset.x)
+                .coerceAtLeast(curPanRestriction.left)
+                .coerceAtMost(curPanRestriction.right),
+            (oldPanOffset.y + scaledPanOffset.y - adjustOffset.y)
+                .coerceAtLeast(curPanRestriction.top)
+                .coerceAtMost(curPanRestriction.bottom)
         )
 
         if (oldPanOffset != newPanOffset) {
@@ -255,18 +267,28 @@ class ZoomState(
         }
     }
 
+    private var zoomAnimationJob by mutableStateOf<Job?>(null)
+
     private val zoomAnimation = Animatable(1f)
 
     private val scaleSpringSpec =
         SpringSpec(stiffness = Spring.StiffnessMediumLow, visibilityThreshold = 0.001f)
+
+    private fun stopZoomAnimation() {
+        zoomAnimationJob?.let {
+            it.cancel()
+            zoomAnimationJob = null
+        }
+    }
 
     /**
      * **NOTE**: There is a bug that detectZoomGestures may swallow double click events initially.
      * I hava no idea how to fix now.
      */
     internal val onDoubleTap: (Offset) -> Unit = { offset ->
+        zoomAnimationJob?.cancel()
         val curScale = zoomScale
-        if (abs(curScale - 1f) < 0.05f) {
+        zoomAnimationJob = if (abs(curScale - 1f) < 0.05f) {
             val curLayoutBounds = layoutBounds
             val curContentBounds = contentBounds
             val targetScale = doubleClickZoomScale
@@ -299,12 +321,21 @@ class ZoomState(
                 )
             }
             scope.launch {
-                stopAnimateToCenter()
-                zoomAnimation.snapTo(curScale)
-                zoomAnimation.animateTo(
-                    targetValue = targetScale, animationSpec = scaleSpringSpec
-                ) {
-                    onGesture(adjustedCentroid, Offset.Zero, value, SOURCE_DOUBLE_TAP)
+                val currentJob = currentCoroutineContext().job
+                try {
+                    stopAnimateToCenter()
+                    zoomAnimation.snapTo(curScale)
+                    zoomAnimation.animateTo(
+                        targetValue = targetScale, animationSpec = scaleSpringSpec
+                    ) {
+                        if (!currentJob.isActive) return@animateTo
+                        onGesture(adjustedCentroid, Offset.Zero, value, SOURCE_DOUBLE_TAP)
+                    }
+                    if (zoomAnimationJob === currentJob) zoomAnimationJob = null
+                } catch (e: CancellationException) {
+                    Logger.d(TAG, "doubleClickZoomScale was cancelled")
+                } catch (e: Exception) {
+                    if (zoomAnimationJob === currentJob) zoomAnimationJob = null
                 }
             }
         } else {
@@ -315,12 +346,21 @@ class ZoomState(
     }
 
     private suspend fun animateToDefault() {
-        stopAnimateToCenter()
-        val curScale = zoomScale
-        val resetToDefaultCentroid = panOffset / (1f - curScale) + layoutBounds.center
-        zoomAnimation.snapTo(curScale)
-        zoomAnimation.animateTo(targetValue = 1f, animationSpec = scaleSpringSpec) {
-            onGesture(resetToDefaultCentroid, Offset.Zero, value, SOURCE_DOUBLE_TAP)
+        val currentJob = currentCoroutineContext().job
+        try {
+            stopAnimateToCenter()
+            val curScale = zoomScale
+            val resetToDefaultCentroid = panOffset / (1f - curScale) + layoutBounds.center
+            zoomAnimation.snapTo(curScale)
+            zoomAnimation.animateTo(targetValue = 1f, animationSpec = scaleSpringSpec) {
+                if (!currentJob.isActive) return@animateTo
+                onGesture(resetToDefaultCentroid, Offset.Zero, value, SOURCE_DOUBLE_TAP)
+            }
+            if (zoomAnimationJob === currentJob) zoomAnimationJob = null
+        } catch (e: CancellationException) {
+            Logger.d(TAG, "animateToDefault was cancelled")
+        } catch (e: Exception) {
+            if (zoomAnimationJob === currentJob) zoomAnimationJob = null
         }
     }
 
@@ -421,6 +461,8 @@ class ZoomState(
                 .collectLatest {
                     if (it) {
                         stopAnimateToCenter()
+                    } else if (zoomAnimationJob != null) {
+                        Logger.d(TAG, "Don't animateToCenter when zoom animating")
                     } else {
                         startAnimateToCenter()
                     }
