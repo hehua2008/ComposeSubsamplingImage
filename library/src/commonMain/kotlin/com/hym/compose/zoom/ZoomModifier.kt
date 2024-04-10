@@ -267,6 +267,26 @@ class ZoomState(
         }
     }
 
+    internal fun onGestureEnd(velocity: Velocity) {
+        val curLayoutBounds = layoutBounds
+        val scaledContentBounds = contentBounds.calculateScaledRect(zoomScale)
+            .translate(panOffset)
+        val flingHorizontal = scaledContentBounds.run {
+            left < curLayoutBounds.left && right > curLayoutBounds.right
+        }
+        val flingVertical = scaledContentBounds.run {
+            top < curLayoutBounds.top && bottom > curLayoutBounds.bottom
+        }
+        if (flingHorizontal && flingVertical) {
+            flingVelocity = velocity
+        } else if (flingHorizontal) {
+            flingVelocity = velocity.copy(y = 0f)
+        } else if (flingVertical) {
+            flingVelocity = velocity.copy(x = 0f)
+        }
+        isGestureZooming = false
+    }
+
     private var zoomAnimationJob by mutableStateOf<Job?>(null)
 
     private val zoomAnimation = Animatable(1f)
@@ -364,7 +384,7 @@ class ZoomState(
         }
     }
 
-    internal var isGestureZooming by mutableStateOf(false)
+    private var isGestureZooming by mutableStateOf(false)
 
     private var centerAnimationJob by mutableStateOf<Job?>(null)
 
@@ -453,7 +473,7 @@ class ZoomState(
         }
     }
 
-    internal var flingVelocity by mutableStateOf(Velocity.Zero)
+    private var flingVelocity by mutableStateOf(Velocity.Zero)
 
     init {
         scope.launch {
@@ -473,6 +493,16 @@ class ZoomState(
             snapshotFlow { flingVelocity }
                 .collectLatest { velocity ->
                     if (velocity == Velocity.Zero) return@collectLatest
+                    if (zoomAnimationJob != null) {
+                        Logger.d(TAG, "Don't fling when doubleClickZoomScale")
+                        flingVelocity = Velocity.Zero
+                        return@collectLatest
+                    }
+                    if (centerAnimationJob != null) {
+                        Logger.d(TAG, "Don't fling when animateToCenter")
+                        flingVelocity = Velocity.Zero
+                        return@collectLatest
+                    }
                     performFling(velocity, flingSpec) { offset ->
                         if (abs(offset.x) > 1f || abs(offset.y) > 1f) {
                             onGesture(Offset.Zero, offset, 1f, SOURCE_FLING)
@@ -539,10 +569,7 @@ fun Modifier.zoom(
             detectZoomGestures(
                 onPreZoom = { zoomChange -> zoomState.onPreZoom(zoomChange) },
                 onPrePan = { panChange -> zoomState.onPrePan(panChange) },
-                onGestureEnd = { velocity ->
-                    zoomState.isGestureZooming = false
-                    zoomState.flingVelocity = velocity
-                }
+                onGestureEnd = { velocity -> zoomState.onGestureEnd(velocity) }
             ) { centroid, pan, zoom ->
                 zoomState.onGesture(centroid, pan, zoom)
             }
