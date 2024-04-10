@@ -583,6 +583,9 @@ fun Modifier.zoom(
         }
 }
 
+private const val MAX_ZOOM_CHANGE = 1.08f
+private const val MIN_ZOOM_CHANGE = 1 / MAX_ZOOM_CHANGE
+
 suspend fun PointerInputScope.detectZoomGestures(
     onPreZoom: (Float) -> Float = { zoomChange -> zoomChange },
     onPrePan: (Offset) -> Offset = { panChange -> panChange },
@@ -613,6 +616,8 @@ suspend fun PointerInputScope.detectZoomGestures(
             }
 
             val zoomChange = event.calculateZoom()
+                .coerceAtLeast(MIN_ZOOM_CHANGE)
+                .coerceAtMost(MAX_ZOOM_CHANGE)
             val panChange = event.calculatePan()
 
             if (!pastTouchSlop) {
