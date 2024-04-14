@@ -42,6 +42,8 @@ kotlin {
 
             implementation(libs.kotlinx.collections.immutable)
 
+            implementation(libs.squareup.okio)
+
             implementation(libs.napier)
         }
 
