@@ -85,8 +85,8 @@ class SubsamplingState(
         private const val TAG = "SubsamplingState"
 
         private const val SLICE_THRESHOLD = 640
-        private const val DISPLAY_SOURCE_THRESHOLD = 0.9f
-        private const val TILE_OVERLAP_SCALE = 1.2f
+        private const val DISPLAY_SOURCE_THRESHOLD = 1f
+        private const val TILE_OVERLAP_SCALE = 1f
     }
 
     data class Tile(
@@ -158,6 +158,16 @@ class SubsamplingState(
     private var sourceDecoder by mutableStateOf<ImageBitmapRegionDecoder<*>?>(null)
     private val sourceDecoderLock = SynchronizedObject()
 
+    internal val previewTile by derivedStateOf {
+        val curPreview = preview ?: return@derivedStateOf null
+        val contentBounds = zoomState.contentBounds
+        if (contentBounds.isEmpty) return@derivedStateOf null
+        Tile(
+            imageBitmap = curPreview,
+            dstSize = contentBounds.size.roundToIntSize()
+        )
+    }
+
     internal var displayTiles by mutableStateOf<ImmutableList<Tile>>(persistentListOf())
         private set
 
@@ -180,19 +190,13 @@ class SubsamplingState(
         val curPreview = preview
         val curSourceDecoder = sourceDecoder
 
-        if (transformedContentBounds.isEmpty || (curPreview == null && curSourceDecoder == null)) {
-            persistentListOf()
-        } else if (curPreview != null && (curSourceDecoder == null || transformedContentBounds.run {
+        if (transformedContentBounds.isEmpty || curSourceDecoder == null ||
+            (curPreview != null && transformedContentBounds.run {
                 width / curPreview.width < DISPLAY_SOURCE_THRESHOLD &&
                         height / curPreview.height < DISPLAY_SOURCE_THRESHOLD
             })
         ) {
-            persistentListOf(
-                Tile(
-                    imageBitmap = curPreview,
-                    dstSize = contentIntSize
-                )
-            )
+            persistentListOf()
         } else {
             val sampleSize = (sourceSize.width / transformedContentBounds.width)
                 .coerceAtMost(sourceSize.height / transformedContentBounds.height)
@@ -347,14 +351,13 @@ class SubsamplingState(
                 .collectLatest { pendingTiles ->
                     val curSourceDecoder = sourceDecoder
                     if (curSourceDecoder == null) {
-                        // Update to preview tile or no tile
+                        // Update to no tile
                     } else {
                         pendingTiles.fastForEach { tile ->
                             if (!isActive) { // updateTilesJob was cancelled
                                 clearReusableTiles()
                                 return@collectLatest
                             }
-                            // preview will return directly
                             tile.decodeBitmap(curSourceDecoder, sourceDecoderLock)
                         }
                     }

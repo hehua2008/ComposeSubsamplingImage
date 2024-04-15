@@ -214,6 +214,18 @@ private class SubsamplingNode(
         // Individual SubsamplingState implementations should be responsible for scaling their drawing
         // image accordingly to fit within the drawing area.
         translate(dx, dy) {
+            subsamplingState.previewTile?.let { tile ->
+                drawIntoCanvas { canvas ->
+                    canvas.drawImageRect(
+                        image = tile.imageBitmap ?: return@drawIntoCanvas,
+                        srcSize = tile.srcSize,
+                        dstOffset = tile.dstOffset,
+                        dstSize = tile.dstSize,
+                        paint = paint
+                    )
+                }
+            }
+
             subsamplingState.displayTiles.fastForEach { tile ->
                 /*
                 drawImage(
