@@ -89,35 +89,35 @@ class SubsamplingState(
         private const val TILE_OVERLAP_SCALE = 1f
     }
 
-    data class Tile(
-        internal val sourceRect: IntRect,
-        internal val sampleSize: Int
-    ) {
-        var imageBitmap: ImageBitmap? = null
-            private set
+    sealed interface Tile {
+        val imageBitmap: ImageBitmap?
 
         val srcSize: IntSize
+
+        val dstOffset: IntOffset
+
+        val dstSize: IntSize
+    }
+
+    internal data class ReusableTile(
+        val sourceRect: IntRect,
+        val sampleSize: Int
+    ) : Tile {
+        override var imageBitmap: ImageBitmap? = null
+            private set
+
+        override val srcSize: IntSize
             get() = imageBitmap?.run { IntSize(width, height) } ?: IntSize.Zero
 
-        var dstOffset: IntOffset = IntOffset.Zero
-            internal set
+        override val dstOffset: IntOffset = IntOffset.Zero
 
-        var dstSize: IntSize = IntSize.Zero
-            internal set
-
-        constructor(imageBitmap: ImageBitmap, dstSize: IntSize) : this(
-            sourceRect = IntRect.Zero,
-            sampleSize = 1
-        ) {
-            this.imageBitmap = imageBitmap
-            this.dstSize = dstSize
-        }
+        override val dstSize: IntSize = IntSize.Zero
 
         private val lock = SynchronizedObject()
 
         private var isDestroyed = false
 
-        internal fun destroy() {
+        fun destroy() {
             synchronized(lock) {
                 imageBitmap?.recycle()
                 imageBitmap = null
@@ -125,7 +125,7 @@ class SubsamplingState(
             }
         }
 
-        internal fun decodeBitmap(
+        fun decodeBitmap(
             decoder: ImageBitmapRegionDecoder<*>,
             decoderLock: SynchronizedObject
         ): Boolean {
@@ -153,16 +153,30 @@ class SubsamplingState(
         }
     }
 
+    internal data class SnapshotTile(
+        val reusableTile: ReusableTile,
+        override val dstOffset: IntOffset,
+        override val dstSize: IntSize
+    ) : Tile by reusableTile
+
+    internal data class PreviewTile(
+        override val imageBitmap: ImageBitmap,
+        override val dstSize: IntSize
+    ) : Tile {
+        override val srcSize: IntSize = IntSize(imageBitmap.width, imageBitmap.height)
+        override val dstOffset: IntOffset = IntOffset.Zero
+    }
+
     private var source by mutableStateOf<SourceMarker?>(null)
     private var preview by mutableStateOf<ImageBitmap?>(null)
     private var sourceDecoder by mutableStateOf<ImageBitmapRegionDecoder<*>?>(null)
     private val sourceDecoderLock = SynchronizedObject()
 
-    internal val previewTile by derivedStateOf {
+    internal val previewTile by derivedStateOf<Tile?> {
         val curPreview = preview ?: return@derivedStateOf null
         val contentBounds = zoomState.contentBounds
         if (contentBounds.isEmpty) return@derivedStateOf null
-        Tile(
+        PreviewTile(
             imageBitmap = curPreview,
             dstSize = contentBounds.size.roundToIntSize()
         )
@@ -171,7 +185,7 @@ class SubsamplingState(
     internal var displayTiles by mutableStateOf<ImmutableList<Tile>>(persistentListOf())
         private set
 
-    private val reusableTiles = mutableListOf<Tile>()
+    private val reusableTiles = mutableListOf<ReusableTile>()
     private val reusableTilesLock = SynchronizedObject()
 
     private fun clearReusableTiles() {
@@ -235,7 +249,7 @@ class SubsamplingState(
             val tileSourceHorizontalScale = sourceSize.width / contentSize.width
             val tileSourceVerticalScale = sourceSize.height / contentSize.height
 
-            val pendingTiles = mutableListOf<Tile>()
+            val pendingTiles = mutableListOf<SnapshotTile>()
 
             for (column in 0 until verticalSlice) {
                 val tileScaledY = tileScaledContentHeight * column + transformedContentBounds.top
@@ -269,7 +283,7 @@ class SubsamplingState(
                         tileSourceY + tileSize.height * tileSourceVerticalScale
                     ).roundToIntRect()
 
-                    val tile = synchronized(reusableTilesLock) {
+                    val reusableTile = synchronized(reusableTilesLock) {
                         val index = reusableTiles.binarySearch {
                             when {
                                 sampleSize < it.sampleSize -> -1
@@ -281,7 +295,7 @@ class SubsamplingState(
                             reusableTiles[index]
                         } else {
                             val insertIndex = -index - 1
-                            Tile(
+                            ReusableTile(
                                 sourceRect = tileSourceRect,
                                 sampleSize = sampleSize
                             ).also {
@@ -289,8 +303,12 @@ class SubsamplingState(
                             }
                         }
                     }
-                    tile.dstOffset = tileOffset
-                    tile.dstSize = tileSize
+
+                    val tile = SnapshotTile(
+                        reusableTile = reusableTile,
+                        dstOffset = tileOffset,
+                        dstSize = tileSize
+                    )
 
                     pendingTiles.add(tile)
                 }
@@ -358,17 +376,18 @@ class SubsamplingState(
                                 clearReusableTiles()
                                 return@collectLatest
                             }
-                            tile.decodeBitmap(curSourceDecoder, sourceDecoderLock)
+                            tile.reusableTile.decodeBitmap(curSourceDecoder, sourceDecoderLock)
                         }
                     }
 
                     displayTiles = pendingTiles
 
+                    val pendingReusableTiles = pendingTiles.map { it.reusableTile }
                     synchronized(reusableTilesLock) {
                         val iterator = reusableTiles.iterator()
                         while (iterator.hasNext()) {
                             val reusableTile = iterator.next()
-                            if (pendingTiles.contains(reusableTile)) continue
+                            if (pendingReusableTiles.contains(reusableTile)) continue
                             reusableTile.destroy()
                             //TODO: iterator.remove()
                         }
