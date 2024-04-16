@@ -18,15 +18,15 @@ import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.unit.roundToIntRect
 import androidx.compose.ui.util.fastForEach
 import com.hym.compose.utils.Comparator
+import com.hym.compose.utils.ImmutableEqualityList
 import com.hym.compose.utils.Logger
 import com.hym.compose.utils.SourceMarker
 import com.hym.compose.utils.calculateScaledRect
 import com.hym.compose.utils.closeQuietly
+import com.hym.compose.utils.emptyImmutableEqualityList
+import com.hym.compose.utils.mutableEqualityListOf
 import com.hym.compose.utils.roundToIntSize
 import com.hym.compose.zoom.ZoomState
-import kotlinx.collections.immutable.ImmutableList
-import kotlinx.collections.immutable.persistentListOf
-import kotlinx.collections.immutable.toImmutableList
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.IO
@@ -182,7 +182,8 @@ class SubsamplingState(
         )
     }
 
-    internal var displayTiles by mutableStateOf<ImmutableList<Tile>>(persistentListOf())
+    internal var displayTiles: ImmutableEqualityList<out Tile>
+            by mutableStateOf(emptyImmutableEqualityList())
         private set
 
     private val reusableTiles = mutableListOf<ReusableTile>()
@@ -197,7 +198,7 @@ class SubsamplingState(
         }
     }
 
-    private val pendingTileList by derivedStateOf {
+    private val pendingTileList: ImmutableEqualityList<SnapshotTile> by derivedStateOf {
         val transformedContentBounds = zoomState.transformedContentBounds
         val contentSize = zoomState.contentBounds.size
         val contentIntSize = contentSize.roundToIntSize()
@@ -210,7 +211,7 @@ class SubsamplingState(
                         height / curPreview.height < DISPLAY_SOURCE_THRESHOLD
             })
         ) {
-            persistentListOf()
+            emptyImmutableEqualityList()
         } else {
             val sampleSize = (sourceSize.width / transformedContentBounds.width)
                 .coerceAtMost(sourceSize.height / transformedContentBounds.height)
@@ -249,7 +250,7 @@ class SubsamplingState(
             val tileSourceHorizontalScale = sourceSize.width / contentSize.width
             val tileSourceVerticalScale = sourceSize.height / contentSize.height
 
-            val pendingTiles = mutableListOf<SnapshotTile>()
+            val pendingTiles = mutableEqualityListOf<SnapshotTile>()
 
             for (column in 0 until verticalSlice) {
                 val tileScaledY = tileScaledContentHeight * column + transformedContentBounds.top
@@ -314,7 +315,7 @@ class SubsamplingState(
                 }
             }
 
-            pendingTiles.toImmutableList()
+            pendingTiles.toImmutableEqualityList()
         }
     }
 
