@@ -32,6 +32,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.IO
 import kotlinx.coroutines.InternalCoroutinesApi
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.cancelAndJoin
 import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.internal.SynchronizedObject
 import kotlinx.coroutines.internal.synchronized
@@ -366,31 +367,38 @@ class SubsamplingState(
         }
 
         updateTilesJob = scope.launch(Dispatchers.IO) {
+            var decodeTilesJob: Job? = null
+
             snapshotFlow { pendingTileList }
                 .collectLatest { pendingTiles ->
-                    val curSourceDecoder = sourceDecoder
-                    if (curSourceDecoder == null) {
-                        // Update to no tile
-                    } else {
-                        pendingTiles.fastForEach { tile ->
-                            if (!isActive) { // updateTilesJob was cancelled
-                                clearReusableTiles()
-                                return@collectLatest
+                    decodeTilesJob?.cancelAndJoin()
+
+                    decodeTilesJob = launch(Dispatchers.IO) decode@{
+                        val curSourceDecoder = sourceDecoder
+                        if (curSourceDecoder == null) {
+                            // Update to no tile
+                        } else {
+                            pendingTiles.fastForEach { tile ->
+                                if (!isActive) { // decodeTilesJob or updateTilesJob was cancelled
+                                    //clearReusableTiles()
+                                    return@decode
+                                }
+                                tile.reusableTile.decodeBitmap(curSourceDecoder, sourceDecoderLock)
                             }
-                            tile.reusableTile.decodeBitmap(curSourceDecoder, sourceDecoderLock)
                         }
-                    }
 
-                    displayTiles = pendingTiles
+                        if (!isActive) return@decode
+                        displayTiles = pendingTiles
 
-                    val pendingReusableTiles = pendingTiles.map { it.reusableTile }
-                    synchronized(reusableTilesLock) {
-                        val iterator = reusableTiles.iterator()
-                        while (iterator.hasNext()) {
-                            val reusableTile = iterator.next()
-                            if (pendingReusableTiles.contains(reusableTile)) continue
-                            reusableTile.destroy()
-                            //TODO: iterator.remove()
+                        val pendingReusableTiles = pendingTiles.map { it.reusableTile }
+                        synchronized(reusableTilesLock) {
+                            val iterator = reusableTiles.iterator()
+                            while (iterator.hasNext()) {
+                                val reusableTile = iterator.next()
+                                if (pendingReusableTiles.contains(reusableTile)) continue
+                                reusableTile.destroy()
+                                //TODO: iterator.remove()
+                            }
                         }
                     }
                 }
