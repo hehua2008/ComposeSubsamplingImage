@@ -24,7 +24,7 @@ fun SubsamplingImage(
     zoomState: ZoomState,
     sourceProvider: suspend () -> Source,
     previewProvider: suspend () -> ImageBitmap,
-    sourceSize: IntSize,
+    sourceIntSize: IntSize = IntSize.Zero,
     imageBitmapRegionDecoderFactory: (SourceMarker) -> ImageBitmapRegionDecoder<*>?,
     modifier: Modifier = Modifier,
     alignment: Alignment = Alignment.Center,
@@ -37,7 +37,7 @@ fun SubsamplingImage(
         zoomState = zoomState,
         sourceProvider = sourceProvider,
         previewProvider = previewProvider,
-        sourceSize = sourceSize,
+        sourceIntSize = sourceIntSize,
         imageBitmapRegionDecoderFactory = imageBitmapRegionDecoderFactory,
         onDisposePreview = onDisposePreview
     )
