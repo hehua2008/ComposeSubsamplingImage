@@ -52,14 +52,14 @@ fun rememberSubsamplingState(
     zoomState: ZoomState,
     sourceProvider: suspend () -> Source,
     previewProvider: suspend () -> ImageBitmap,
-    sourceSize: IntSize, // Not as key
+    sourceIntSize: IntSize = IntSize.Zero, // Not as key
     imageBitmapRegionDecoderFactory: (SourceMarker) -> ImageBitmapRegionDecoder<*>?, // Not as key
     onDisposePreview: ((preview: ImageBitmap) -> Unit)? = null // Not as key
 ): SubsamplingState {
     val scope = rememberCoroutineScope() // Not as key
     val subsamplingState = remember(zoomState, sourceProvider, previewProvider) {
         SubsamplingState(
-            sourceSize = sourceSize,
+            sourceIntSize = sourceIntSize,
             zoomState = zoomState,
             sourceProvider = sourceProvider,
             previewProvider = previewProvider,
@@ -74,7 +74,7 @@ fun rememberSubsamplingState(
 @OptIn(InternalCoroutinesApi::class)
 @Stable
 class SubsamplingState(
-    val sourceSize: IntSize,
+    sourceIntSize: IntSize = IntSize.Zero,
     private val zoomState: ZoomState,
     private val sourceProvider: suspend () -> Source,
     private val previewProvider: suspend () -> ImageBitmap,
@@ -172,6 +172,8 @@ class SubsamplingState(
     private var preview by mutableStateOf<ImageBitmap?>(null)
     private var sourceDecoder by mutableStateOf<ImageBitmapRegionDecoder<*>?>(null)
     private val sourceDecoderLock = SynchronizedObject()
+    internal var sourceSize by mutableStateOf(sourceIntSize)
+        private set
 
     internal val previewTile by derivedStateOf<Tile?> {
         val curPreview = preview ?: return@derivedStateOf null
@@ -205,8 +207,9 @@ class SubsamplingState(
         val contentIntSize = contentSize.roundToIntSize()
         val curPreview = preview
         val curSourceDecoder = sourceDecoder
+        val curSourceSize = sourceSize
 
-        if (transformedContentBounds.isEmpty || curSourceDecoder == null ||
+        if (transformedContentBounds.isEmpty || curSourceDecoder == null || curSourceSize == IntSize.Zero ||
             (curPreview != null && transformedContentBounds.run {
                 width / curPreview.width < DISPLAY_SOURCE_THRESHOLD &&
                         height / curPreview.height < DISPLAY_SOURCE_THRESHOLD
@@ -214,8 +217,8 @@ class SubsamplingState(
         ) {
             emptyImmutableEqualityList()
         } else {
-            val sampleSize = (sourceSize.width / transformedContentBounds.width)
-                .coerceAtMost(sourceSize.height / transformedContentBounds.height)
+            val sampleSize = (curSourceSize.width / transformedContentBounds.width)
+                .coerceAtMost(curSourceSize.height / transformedContentBounds.height)
                 .let { sourceScale ->
                     var sampleSize = 1
                     while (sourceScale >= sampleSize * 2) {
@@ -248,8 +251,8 @@ class SubsamplingState(
             val tileScaledContentHeight = tileHeight * transform.scaleY
             val tileScaledContentLastHeight = tileLastHeight * transform.scaleY
 
-            val tileSourceHorizontalScale = sourceSize.width / contentSize.width
-            val tileSourceVerticalScale = sourceSize.height / contentSize.height
+            val tileSourceHorizontalScale = curSourceSize.width / contentSize.width
+            val tileSourceVerticalScale = curSourceSize.height / contentSize.height
 
             val pendingTiles = mutableEqualityListOf<SnapshotTile>()
 
@@ -344,6 +347,7 @@ class SubsamplingState(
             }
             source = sourceMarker
             if (decoder.width != 0 && decoder.height != 0) {
+                sourceSize = IntSize(decoder.width, decoder.height)
                 zoomState.contentAspectRatio = decoder.width / decoder.height.toFloat()
             }
             sourceDecoder = decoder

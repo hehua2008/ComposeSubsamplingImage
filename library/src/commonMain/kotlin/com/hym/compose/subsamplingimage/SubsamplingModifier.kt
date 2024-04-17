@@ -190,7 +190,13 @@ private class SubsamplingNode(
     }
 
     override fun ContentDrawScope.draw() {
-        val srcSize = subsamplingState.sourceSize.toSize()
+        val sourceSize = subsamplingState.sourceSize
+        if (sourceSize == IntSize.Zero) {
+            // Maintain the same pattern as Modifier.drawBehind to allow chaining of DrawModifiers
+            drawContent()
+            return
+        }
+        val srcSize = sourceSize.toSize()
 
         // Compute the offset to translate the image based on the given alignment
         // and size to draw based on the ContentScale parameter
