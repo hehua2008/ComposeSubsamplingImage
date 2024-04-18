@@ -26,10 +26,12 @@ import androidx.compose.runtime.setValue
 import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clipToBounds
+import androidx.compose.ui.geometry.MutableRect
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Rect
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.geometry.toRect
+import androidx.compose.ui.graphics.TransformOrigin
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.input.pointer.PointerInputScope
 import androidx.compose.ui.input.pointer.changedToUpIgnoreConsumed
@@ -43,6 +45,7 @@ import androidx.compose.ui.unit.toSize
 import androidx.compose.ui.util.fastAll
 import androidx.compose.ui.util.fastAny
 import androidx.compose.ui.util.fastForEach
+import com.hym.compose.utils.GraphicsLayerTransform
 import com.hym.compose.utils.Logger
 import com.hym.compose.utils.calculateScaledRect
 import com.hym.compose.utils.performFling
@@ -139,16 +142,36 @@ class ZoomState(
         }
     }
 
-    var panOffset by mutableStateOf(Offset.Zero)
-        internal set
+    var transform by mutableStateOf(GraphicsLayerTransform.Default)
+        private set
 
-    var zoomScale by mutableFloatStateOf(1f)
-        internal set
+    var transformedContentBounds by mutableStateOf(Rect.Zero)
+        private set
+
+    private var panZoomTranslation by mutableStateOf(Offset.Zero)
+
+    private val tmpMutableRect = MutableRect(0f, 0f, 0f, 0f)
+
+    private fun updateTransformation(newTransform: GraphicsLayerTransform, source: Int) {
+        if (!checkSource(source)) return
+        if (transform == newTransform) return
+
+        val curLayoutBounds = layoutBounds
+        val curContentBounds = contentBounds
+        newTransform.transformMatrix(curLayoutBounds.width, curLayoutBounds.height)
+            .mapRect(tmpMutableRect, curContentBounds)
+        val newTransformedContentBounds = tmpMutableRect.toRect()
+        transformedContentBounds = newTransformedContentBounds
+        panZoomTranslation = newTransformedContentBounds.center - curContentBounds.center
+
+        transform = newTransform
+    }
 
     private val panRestriction by derivedStateOf {
         val curLayoutBounds = layoutBounds
         if (curLayoutBounds.isEmpty) return@derivedStateOf Rect.Zero
-        val curScale = zoomScale
+        val curTransform = transform
+        val curScale = curTransform.scale
         val scaledContentWidth = contentBounds.width * curScale
         val scaledContentHeight = contentBounds.height * curScale
         val isFillWidth = scaledContentWidth >= curLayoutBounds.width
@@ -174,12 +197,16 @@ class ZoomState(
         } else { // isFillWidth.not() && isFillHeight.not()
             Size.Zero
         }
+        val curPanZoomTranslation = panZoomTranslation
+        val zoomTranslationX = curPanZoomTranslation.x - curTransform.translationX
+        val zoomTranslationY = curPanZoomTranslation.y - curTransform.translationY
         Rect(-diff.width / 2, -diff.height / 2, diff.width / 2, diff.height / 2)
+            .translate(-zoomTranslationX, -zoomTranslationY)
     }
 
     internal fun onPreZoom(availableZoomChange: Float): Float {
         if (availableZoomChange == 1f) return 1f // Consider if will accept pan change
-        val curScale = zoomScale
+        val curScale = transform.scale
         return if (curScale > minZoomScale && availableZoomChange < 1f) {
             availableZoomChange.coerceAtLeast(minZoomScale / curScale)
         } else if (curScale < maxZoomScale && availableZoomChange > 1f) {
@@ -191,9 +218,9 @@ class ZoomState(
 
     internal fun onPrePan(availablePanChange: Offset): Offset {
         if (availablePanChange == Offset.Zero) return Offset.Zero
-        val curScale = zoomScale
+        val curTransform = transform
+        val curScale = curTransform.scale
         if (curScale <= 1f) return Offset.Zero // Will not accept pan when zoomScale <= 1f
-        val curPanOffset = panOffset
         val curPanRestriction = panRestriction
         val curLayoutBounds = layoutBounds
         val scaledContentWidth = contentBounds.width * curScale
@@ -203,78 +230,100 @@ class ZoomState(
                 0f // Will not accept horizontal pan
             } else {
                 availablePanChange.x
-                    .coerceAtLeast(curPanRestriction.left - curPanOffset.x)
-                    .coerceAtMost(curPanRestriction.right - curPanOffset.x)
+                    .coerceAtLeast(curPanRestriction.left - curTransform.translationX)
+                    .coerceAtMost(curPanRestriction.right - curTransform.translationX)
             },
             if (scaledContentHeight < curLayoutBounds.height) {
                 0f // Will not accept vertical pan
             } else {
                 availablePanChange.y
-                    .coerceAtLeast(curPanRestriction.top - curPanOffset.y)
-                    .coerceAtMost(curPanRestriction.bottom - curPanOffset.y)
+                    .coerceAtLeast(curPanRestriction.top - curTransform.translationY)
+                    .coerceAtMost(curPanRestriction.bottom - curTransform.translationY)
             }
         )
     }
 
-    internal fun onGesture(
-        centroid: Offset, pan: Offset, zoom: Float, source: Int = SOURCE_GESTURE
-    ) {
+    private fun checkSource(source: Int): Boolean {
         when (source) {
             SOURCE_GESTURE -> {
                 stopZoomAnimation()
             }
 
             SOURCE_ANIMATE_CENTER -> {
-                if (zoomAnimationJob != null) return
+                if (zoomAnimationJob != null) return false
             }
 
             SOURCE_FLING -> {
-                if (zoomAnimationJob != null || centerAnimationJob != null) return
+                if (zoomAnimationJob != null || centerAnimationJob != null) return false
             }
         }
+        return true
+    }
 
-        val boundsCenter = layoutBounds.center
-        val oldZoomScale = zoomScale
-        val beforeScaledCentroid = (centroid - boundsCenter) * oldZoomScale
+    internal fun onGesture(
+        centroid: Offset, pan: Offset, zoom: Float, source: Int = SOURCE_GESTURE
+    ) {
+        if (!checkSource(source)) return
 
+        val oldTransform = transform
+        val curLayoutBounds = layoutBounds
+
+        val oldZoomScale = oldTransform.scale
         val newZoomScale = (if (source == SOURCE_DOUBLE_TAP) zoom else (oldZoomScale * zoom))
             .coerceAtLeast(minZoomScale)
             .coerceAtMost(maxZoomScale)
-        if (oldZoomScale != newZoomScale) {
-            zoomScale = newZoomScale
-        }
 
-        val afterScaledCentroid = (centroid - boundsCenter) * newZoomScale
-        val adjustOffset = afterScaledCentroid - beforeScaledCentroid
-
-        val oldPanOffset = panOffset
         val scaledPanOffset = pan * newZoomScale
         if (oldZoomScale != newZoomScale && source == SOURCE_GESTURE) {
             isGestureZooming = true // Set this before reading panRestriction
         }
         val curPanRestriction = panRestriction
-        val newPanOffset = Offset(
-            (oldPanOffset.x + scaledPanOffset.x - adjustOffset.x)
-                .coerceAtLeast(curPanRestriction.left)
-                .coerceAtMost(curPanRestriction.right),
-            (oldPanOffset.y + scaledPanOffset.y - adjustOffset.y)
-                .coerceAtLeast(curPanRestriction.top)
-                .coerceAtMost(curPanRestriction.bottom)
-        )
 
-        if (oldPanOffset != newPanOffset) {
-            panOffset = newPanOffset
+        val newTransform = if (oldZoomScale != newZoomScale) {
+            val adjustedCentroidX =
+                centroid.x.coerceAtLeast(0f).coerceAtMost(curLayoutBounds.width)
+            val adjustedCentroidY =
+                centroid.y.coerceAtLeast(0f).coerceAtMost(curLayoutBounds.height)
+            val transformOrigin = TransformOrigin(
+                adjustedCentroidX / curLayoutBounds.width,
+                adjustedCentroidY / curLayoutBounds.height
+            )
+            val adjustTranslationX = // (oldCentroidX - adjustedCentroidX) * (1 - oldZoomScale)
+                (oldTransform.transformOrigin.pivotFractionX * curLayoutBounds.width - adjustedCentroidX) * (1 - oldZoomScale)
+            val adjustTranslationY = // (oldCentroidY - adjustedCentroidY) * (1 - oldZoomScale)
+                (oldTransform.transformOrigin.pivotFractionY * curLayoutBounds.height - adjustedCentroidY) * (1 - oldZoomScale)
+            oldTransform.copy(
+                scaleX = newZoomScale,
+                scaleY = newZoomScale,
+                translationX = (oldTransform.translationX + scaledPanOffset.x + adjustTranslationX)
+                    .coerceAtLeast(curPanRestriction.left)
+                    .coerceAtMost(curPanRestriction.right),
+                translationY = (oldTransform.translationY + scaledPanOffset.y + adjustTranslationY)
+                    .coerceAtLeast(curPanRestriction.top)
+                    .coerceAtMost(curPanRestriction.bottom),
+                transformOrigin = transformOrigin
+            )
+        } else {
+            oldTransform.copy(
+                translationX = (oldTransform.translationX + scaledPanOffset.x)
+                    .coerceAtLeast(curPanRestriction.left)
+                    .coerceAtMost(curPanRestriction.right),
+                translationY = (oldTransform.translationY + scaledPanOffset.y)
+                    .coerceAtLeast(curPanRestriction.top)
+                    .coerceAtMost(curPanRestriction.bottom)
+            )
         }
+
+        updateTransformation(newTransform, source)
     }
 
     internal fun onGestureEnd(velocity: Velocity) {
         val curLayoutBounds = layoutBounds
-        val scaledContentBounds = contentBounds.calculateScaledRect(zoomScale)
-            .translate(panOffset)
-        val flingHorizontal = scaledContentBounds.run {
+        val curTransformedContentBounds = transformedContentBounds
+        val flingHorizontal = curTransformedContentBounds.run {
             left < curLayoutBounds.left && right > curLayoutBounds.right
         }
-        val flingVertical = scaledContentBounds.run {
+        val flingVertical = curTransformedContentBounds.run {
             top < curLayoutBounds.top && bottom > curLayoutBounds.bottom
         }
         if (flingHorizontal && flingVertical) {
@@ -307,7 +356,7 @@ class ZoomState(
      */
     internal val onDoubleTap: (Offset) -> Unit = { offset ->
         zoomAnimationJob?.cancel()
-        val curScale = zoomScale
+        val curScale = transform.scale
         zoomAnimationJob = if (abs(curScale - 1f) < 0.05f) {
             val curLayoutBounds = layoutBounds
             val curContentBounds = contentBounds
@@ -369,13 +418,26 @@ class ZoomState(
         val currentJob = currentCoroutineContext().job
         try {
             stopAnimateToCenter()
-            val curScale = zoomScale
-            val resetToDefaultCentroid = panOffset / (1f - curScale) + layoutBounds.center
-            zoomAnimation.snapTo(curScale)
-            zoomAnimation.animateTo(targetValue = 1f, animationSpec = scaleSpringSpec) {
+            val curTransform = transform
+            zoomAnimation.snapTo(1f)
+            zoomAnimation.animateTo(targetValue = 0f, animationSpec = scaleSpringSpec) {
                 if (!currentJob.isActive) return@animateTo
-                onGesture(resetToDefaultCentroid, Offset.Zero, value, SOURCE_DOUBLE_TAP)
+                updateTransformation(
+                    curTransform.copy(
+                        scaleX = 1 + (curTransform.scaleX - 1) * value,
+                        scaleY = 1 + (curTransform.scaleY - 1) * value,
+                        translationX = curTransform.translationX * value,
+                        translationY = curTransform.translationY * value,
+                        transformOrigin = TransformOrigin(
+                            0.5f + (curTransform.transformOrigin.pivotFractionX - 0.5f) * value,
+                            0.5f + (curTransform.transformOrigin.pivotFractionY - 0.5f) * value
+                        )
+                    ),
+                    SOURCE_DOUBLE_TAP
+                )
             }
+            // Avoid precision loss issues
+            updateTransformation(GraphicsLayerTransform.Default, SOURCE_DOUBLE_TAP)
             if (zoomAnimationJob === currentJob) zoomAnimationJob = null
         } catch (e: CancellationException) {
             Logger.d(TAG, "animateToDefault was cancelled")
@@ -416,10 +478,9 @@ class ZoomState(
             delay(300) // start centerAnimation 300ms after ending gesture zoom
 
             val curLayoutBounds = layoutBounds
-            val curPanOffset = panOffset
-            val scaledContentBounds = contentBounds.calculateScaledRect(zoomScale)
-                .translate(curPanOffset)
-            val targetPanOffset = scaledContentBounds.run {
+            val curTransform = transform
+            val curPanZoomTranslation = panZoomTranslation
+            val targetPanZoomTranslation = transformedContentBounds.run {
                 val leftDiff = left - curLayoutBounds.left
                 val rightDiff = right - curLayoutBounds.right
                 val topDiff = top - curLayoutBounds.top
@@ -435,7 +496,7 @@ class ZoomState(
                     } else if (leftDiff > 0 && rightDiff < 0) {
                         0f // align horizontal center
                     } else { // leftDiff < 0 && rightDiff > 0
-                        curPanOffset.x
+                        curPanZoomTranslation.x
                     },
                     if ((topDiff < 0 && bottomDiff < 0) || (topDiff > 0 && bottomDiff > 0)) {
                         if (height >= curLayoutBounds.height) {
@@ -447,22 +508,28 @@ class ZoomState(
                     } else if (topDiff > 0 && bottomDiff < 0) {
                         0f // align vertical center
                     } else { // topDiff < 0 && bottomDiff > 0
-                        curPanOffset.y
+                        curPanZoomTranslation.y
                     }
                 )
             }
             val currentJob = currentCoroutineContext().job
-            if (curPanOffset == targetPanOffset) {
+            if (curPanZoomTranslation == targetPanZoomTranslation) {
                 if (centerAnimationJob === currentJob) centerAnimationJob = null
                 return@launch
             }
+            val curTranslation = Offset(curTransform.translationX, curTransform.translationY)
+            val curZoomTranslation = curPanZoomTranslation - curTranslation
+            val targetTranslation = targetPanZoomTranslation - curZoomTranslation
             try {
-                centerAnimation.snapTo(curPanOffset)
+                centerAnimation.snapTo(curTranslation)
                 centerAnimation.animateTo(
-                    targetValue = targetPanOffset, animationSpec = motionSpringSpec
+                    targetValue = targetTranslation, animationSpec = motionSpringSpec
                 ) {
                     if (!currentJob.isActive) return@animateTo
-                    panOffset = value
+                    updateTransformation(
+                        curTransform.copy(translationX = value.x, translationY = value.y),
+                        SOURCE_ANIMATE_CENTER
+                    )
                 }
                 if (centerAnimationJob === currentJob) centerAnimationJob = null
             } catch (e: CancellationException) {
@@ -558,12 +625,12 @@ fun Modifier.zoom(
         }
         .clipToBounds() // set clip = true in graphicsLayer block have no effect, I have no idea why
         .graphicsLayer {
-            val curScale = zoomState.zoomScale
-            scaleX = curScale
-            scaleY = curScale
-            val curPanOffset = zoomState.panOffset
-            translationX = curPanOffset.x
-            translationY = curPanOffset.y
+            val curTransform = zoomState.transform
+            scaleX = curTransform.scaleX
+            scaleY = curTransform.scaleY
+            translationX = curTransform.translationX
+            translationY = curTransform.translationY
+            transformOrigin = curTransform.transformOrigin
         }
         .pointerInput(zoomState) {
             detectZoomGestures(
