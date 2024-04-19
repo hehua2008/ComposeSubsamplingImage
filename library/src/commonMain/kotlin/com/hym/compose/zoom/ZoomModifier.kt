@@ -247,10 +247,16 @@ class ZoomState(
         when (source) {
             SOURCE_GESTURE -> {
                 stopZoomAnimation()
+                flingVelocity = Velocity.Zero
+            }
+
+            SOURCE_DOUBLE_TAP -> {
+                flingVelocity = Velocity.Zero
             }
 
             SOURCE_ANIMATE_CENTER -> {
                 if (zoomAnimationJob != null) return false
+                flingVelocity = Velocity.Zero
             }
 
             SOURCE_FLING -> {
@@ -571,9 +577,13 @@ class ZoomState(
                         return@collectLatest
                     }
                     performFling(velocity, flingSpec) { offset ->
-                        if (abs(offset.x) > 1f || abs(offset.y) > 1f) {
-                            onGesture(Offset.Zero, offset, 1f, SOURCE_FLING)
-                            offset
+                        if (flingVelocity != velocity) {
+                            return@performFling Offset.Zero
+                        }
+                        val prePanConsume = onPrePan(offset)
+                        if (abs(prePanConsume.x) > 1f || abs(prePanConsume.y) > 1f) {
+                            onGesture(Offset.Zero, prePanConsume, 1f, SOURCE_FLING)
+                            prePanConsume
                         } else Offset.Zero
                     }
                     // Reset flingVelocity to zero because snapshotFlow will auto distinctUntilChanged
