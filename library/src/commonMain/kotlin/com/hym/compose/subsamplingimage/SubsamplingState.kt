@@ -382,6 +382,17 @@ class SubsamplingState(
                         if (curSourceDecoder == null) {
                             // Update to no tile
                         } else {
+                            val pendingReusableTiles = pendingTiles.map { it.reusableTile }
+                            synchronized(reusableTilesLock) {
+                                val iterator = reusableTiles.iterator()
+                                while (iterator.hasNext()) {
+                                    val reusableTile = iterator.next()
+                                    if (pendingReusableTiles.contains(reusableTile)) continue
+                                    reusableTile.destroy()
+                                    //TODO: iterator.remove()
+                                }
+                            }
+
                             pendingTiles.fastForEach { tile ->
                                 if (!isActive) { // decodeTilesJob or updateTilesJob was cancelled
                                     //clearReusableTiles()
@@ -393,17 +404,6 @@ class SubsamplingState(
 
                         if (!isActive) return@decode
                         displayTiles = pendingTiles
-
-                        val pendingReusableTiles = pendingTiles.map { it.reusableTile }
-                        synchronized(reusableTilesLock) {
-                            val iterator = reusableTiles.iterator()
-                            while (iterator.hasNext()) {
-                                val reusableTile = iterator.next()
-                                if (pendingReusableTiles.contains(reusableTile)) continue
-                                reusableTile.destroy()
-                                //TODO: iterator.remove()
-                            }
-                        }
                     }
                 }
         }
