@@ -279,7 +279,6 @@ class ZoomState(
             .coerceAtLeast(minZoomScale)
             .coerceAtMost(maxZoomScale)
 
-        val scaledPanOffset = pan * newZoomScale
         if (oldZoomScale != newZoomScale && source == SOURCE_GESTURE) {
             isGestureZooming = true // Set this before reading panRestriction
         }
@@ -301,20 +300,20 @@ class ZoomState(
             oldTransform.copy(
                 scaleX = newZoomScale,
                 scaleY = newZoomScale,
-                translationX = (oldTransform.translationX + scaledPanOffset.x + adjustTranslationX)
+                translationX = (oldTransform.translationX + pan.x + adjustTranslationX)
                     .coerceAtLeast(curPanRestriction.left)
                     .coerceAtMost(curPanRestriction.right),
-                translationY = (oldTransform.translationY + scaledPanOffset.y + adjustTranslationY)
+                translationY = (oldTransform.translationY + pan.y + adjustTranslationY)
                     .coerceAtLeast(curPanRestriction.top)
                     .coerceAtMost(curPanRestriction.bottom),
                 transformOrigin = transformOrigin
             )
         } else {
             oldTransform.copy(
-                translationX = (oldTransform.translationX + scaledPanOffset.x)
+                translationX = (oldTransform.translationX + pan.x)
                     .coerceAtLeast(curPanRestriction.left)
                     .coerceAtMost(curPanRestriction.right),
-                translationY = (oldTransform.translationY + scaledPanOffset.y)
+                translationY = (oldTransform.translationY + pan.y)
                     .coerceAtLeast(curPanRestriction.top)
                     .coerceAtMost(curPanRestriction.bottom)
             )
@@ -646,6 +645,7 @@ fun Modifier.zoom(
             detectZoomGestures(
                 onPreZoom = { zoomChange -> zoomState.onPreZoom(zoomChange) },
                 onPrePan = { panChange -> zoomState.onPrePan(panChange) },
+                onMotionScale = { zoomState.transform.scale },
                 onGestureEnd = { velocity -> zoomState.onGestureEnd(velocity) }
             ) { centroid, pan, zoom ->
                 zoomState.onGesture(centroid, pan, zoom)
@@ -666,6 +666,7 @@ private const val MIN_ZOOM_CHANGE = 1 / MAX_ZOOM_CHANGE
 suspend fun PointerInputScope.detectZoomGestures(
     onPreZoom: (Float) -> Float = { zoomChange -> zoomChange },
     onPrePan: (Offset) -> Offset = { panChange -> panChange },
+    onMotionScale: () -> Float = { 1f },
     onGestureEnd: ((Velocity) -> Unit)? = null,
     onGesture: (centroid: Offset, pan: Offset, zoom: Float) -> Unit
 ) {
@@ -692,18 +693,19 @@ suspend fun PointerInputScope.detectZoomGestures(
                 velocityTracker.addPointerInputChange(it)
             }
 
+            val motionScale = onMotionScale()
             val zoomChange = event.calculateZoom()
                 .coerceAtLeast(MIN_ZOOM_CHANGE)
                 .coerceAtMost(MAX_ZOOM_CHANGE)
-            val panChange = event.calculatePan()
+            val panChange = event.calculatePan() * motionScale
 
             if (!pastTouchSlop) {
                 zoom *= zoomChange
                 pan += panChange
 
                 val centroidSize = event.calculateCentroidSize(useCurrent = false)
-                val zoomMotion = abs(1 - zoom) * centroidSize
-                val panMotion = pan.getDistance()
+                val zoomMotion = abs(1 - zoom) * centroidSize * motionScale
+                val panMotion = pan.getDistance() * motionScale
 
                 if (zoomMotion > touchSlop ||
                     panMotion > touchSlop
@@ -739,7 +741,7 @@ suspend fun PointerInputScope.detectZoomGestures(
             }
         } while (event.changes.fastAny { it.pressed })
 
-        val velocity = velocityTracker.calculateVelocity(maximumVelocity)
+        val velocity = velocityTracker.calculateVelocity(maximumVelocity) * onMotionScale()
         onGestureEnd?.invoke(velocity)
     }
 }
