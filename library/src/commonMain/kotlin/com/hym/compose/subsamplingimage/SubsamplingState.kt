@@ -118,6 +118,13 @@ class SubsamplingState(
 
         private var isDestroyed = false
 
+        fun recycle() {
+            synchronized(lock) {
+                imageBitmap?.recycle()
+                imageBitmap = null
+            }
+        }
+
         fun destroy() {
             synchronized(lock) {
                 imageBitmap?.recycle()
@@ -382,13 +389,21 @@ class SubsamplingState(
                         if (curSourceDecoder == null) {
                             // Update to no tile
                         } else {
-                            val pendingReusableTiles = pendingTiles.map { it.reusableTile }
+                            val displayPendingReusableTiles = mutableListOf<ReusableTile>()
+                            displayTiles.fastForEach {
+                                if (it is SnapshotTile) {
+                                    displayPendingReusableTiles.add(it.reusableTile)
+                                }
+                            }
+                            pendingTiles.fastForEach {
+                                displayPendingReusableTiles.add(it.reusableTile)
+                            }
                             synchronized(reusableTilesLock) {
                                 val iterator = reusableTiles.iterator()
                                 while (iterator.hasNext()) {
                                     val reusableTile = iterator.next()
-                                    if (pendingReusableTiles.contains(reusableTile)) continue
-                                    reusableTile.destroy()
+                                    if (displayPendingReusableTiles.contains(reusableTile)) continue
+                                    reusableTile.recycle()
                                     //TODO: iterator.remove()
                                 }
                             }
@@ -404,6 +419,17 @@ class SubsamplingState(
 
                         if (!isActive) return@decode
                         displayTiles = pendingTiles
+
+                        val pendingReusableTiles = pendingTiles.map { it.reusableTile }
+                        synchronized(reusableTilesLock) {
+                            val iterator = reusableTiles.iterator()
+                            while (iterator.hasNext()) {
+                                val reusableTile = iterator.next()
+                                if (pendingReusableTiles.contains(reusableTile)) continue
+                                reusableTile.recycle()
+                                //TODO: iterator.remove()
+                            }
+                        }
                     }
                 }
         }
@@ -416,10 +442,14 @@ class SubsamplingState(
 
         loadPreviewJob?.cancel()
         preview?.let {
+            // Try to fix Error, cannot access an invalid/free'd bitmap here!
+            preview = null
             onDisposePreview?.invoke(it)
         }
 
         updateTilesJob?.cancel()
+        // Try to fix Error, cannot access an invalid/free'd bitmap here!
+        displayTiles = emptyImmutableEqualityList()
         clearReusableTiles()
     }
 
