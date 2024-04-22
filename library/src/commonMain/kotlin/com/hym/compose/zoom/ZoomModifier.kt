@@ -24,6 +24,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.snapshotFlow
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clipToBounds
 import androidx.compose.ui.geometry.MutableRect
@@ -40,7 +41,9 @@ import androidx.compose.ui.input.pointer.positionChanged
 import androidx.compose.ui.input.pointer.util.VelocityTracker
 import androidx.compose.ui.input.pointer.util.addPointerInputChange
 import androidx.compose.ui.layout.onGloballyPositioned
+import androidx.compose.ui.unit.LayoutDirection
 import androidx.compose.ui.unit.Velocity
+import androidx.compose.ui.unit.toOffset
 import androidx.compose.ui.unit.toSize
 import androidx.compose.ui.util.fastAll
 import androidx.compose.ui.util.fastAny
@@ -49,6 +52,7 @@ import com.hym.compose.utils.GraphicsLayerTransform
 import com.hym.compose.utils.Logger
 import com.hym.compose.utils.calculateScaledRect
 import com.hym.compose.utils.performFling
+import com.hym.compose.utils.roundToIntSize
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
@@ -126,19 +130,26 @@ class ZoomState(
         if (curContentAspectRatio <= 0f || curLayoutBounds.isEmpty) {
             curLayoutBounds
         } else {
-            val assumeContentWidth = curLayoutBounds.height * curContentAspectRatio
-            if (curLayoutBounds.width < assumeContentWidth) {
-                val contentHeight = curLayoutBounds.width / curContentAspectRatio
-                val diffHeight = curLayoutBounds.height - contentHeight
-                curLayoutBounds.run {
-                    copy(top = top + diffHeight / 2, bottom = bottom - diffHeight / 2)
-                }
+            val curLayoutAspectRatio = curLayoutBounds.width / curLayoutBounds.height
+            val contentSize = if (curLayoutAspectRatio < curContentAspectRatio) {
+                Size(
+                    curLayoutBounds.width,
+                    curLayoutBounds.width / curContentAspectRatio
+                )
+            } else if (curLayoutAspectRatio > curContentAspectRatio) {
+                Size(
+                    curLayoutBounds.height * curContentAspectRatio,
+                    curLayoutBounds.height
+                )
             } else {
-                val diffWidth = curLayoutBounds.width - assumeContentWidth
-                curLayoutBounds.run {
-                    copy(left = left + diffWidth / 2, right = right - diffWidth / 2)
-                }
+                curLayoutBounds.size
             }
+            val contentOffset = Alignment.Center.align(
+                contentSize.roundToIntSize(),
+                curLayoutBounds.size.roundToIntSize(),
+                LayoutDirection.Ltr
+            ).toOffset()
+            Rect(contentOffset, contentSize)
         }
     }
 
