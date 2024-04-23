@@ -16,6 +16,7 @@ import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.IntRect
 import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.unit.roundToIntRect
+import androidx.compose.ui.unit.toIntRect
 import androidx.compose.ui.util.fastForEach
 import com.hym.compose.utils.Comparator
 import com.hym.compose.utils.ImmutableEqualityList
@@ -41,6 +42,7 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import okio.Source
 import kotlin.math.roundToInt
+import kotlin.math.sqrt
 
 /**
  * @author hehua2008
@@ -51,7 +53,7 @@ import kotlin.math.roundToInt
 fun rememberSubsamplingState(
     zoomState: ZoomState,
     sourceProvider: suspend () -> Source,
-    previewProvider: suspend () -> ImageBitmap,
+    previewProvider: (suspend () -> ImageBitmap)? = null,
     sourceIntSize: IntSize = IntSize.Zero, // Not as key
     imageBitmapRegionDecoderFactory: (SourceMarker) -> ImageBitmapRegionDecoder<*>?, // Not as key
     onDisposePreview: ((preview: ImageBitmap) -> Unit)? = null // Not as key
@@ -77,7 +79,7 @@ class SubsamplingState(
     sourceIntSize: IntSize = IntSize.Zero,
     private val zoomState: ZoomState,
     private val sourceProvider: suspend () -> Source,
-    private val previewProvider: suspend () -> ImageBitmap,
+    private val previewProvider: (suspend () -> ImageBitmap)? = null,
     private val imageBitmapRegionDecoderFactory: (SourceMarker) -> ImageBitmapRegionDecoder<*>?,
     private val onDisposePreview: ((preview: ImageBitmap) -> Unit)? = null,
     private val scope: CoroutineScope
@@ -88,6 +90,8 @@ class SubsamplingState(
         private const val SLICE_THRESHOLD = 640
         private const val DISPLAY_SOURCE_THRESHOLD = 1f
         private const val TILE_OVERLAP_SCALE = 1f
+
+        private const val PREVIEW_DEFAULT_SIZE = 1080 * 1920
     }
 
     sealed interface Tile {
@@ -173,6 +177,15 @@ class SubsamplingState(
     ) : Tile {
         override val srcSize: IntSize = IntSize(imageBitmap.width, imageBitmap.height)
         override val dstOffset: IntOffset = IntOffset.Zero
+    }
+
+    init {
+        if (sourceIntSize == IntSize.Zero && previewProvider != null) {
+            Logger.w(
+                TAG, "If previewProvider is provided, it‘s best to provide sourceIntSize too! " +
+                        "Otherwise, the image cannot be displayed until the source image is loaded."
+            )
+        }
     }
 
     private var source by mutableStateOf<SourceMarker?>(null)
@@ -358,22 +371,52 @@ class SubsamplingState(
                 zoomState.contentAspectRatio = decoder.width / decoder.height.toFloat()
             }
             sourceDecoder = decoder
+
+            if (previewProvider != null) return@launch
+            loadPreviewJob = scope.launch decodePreview@{
+                val imageBitmap = withContext(Dispatchers.IO) {
+                    val sourceRect = if (decoder.width != 0 && decoder.height != 0) {
+                        IntRect(0, 0, decoder.width, decoder.height)
+                    } else sourceSize.toIntRect()
+                    val sampleSize =
+                        sqrt(sourceRect.width * sourceRect.height / PREVIEW_DEFAULT_SIZE.toDouble())
+                            .let { times ->
+                                var sampleSize = 1
+                                while (times >= sampleSize) {
+                                    sampleSize *= 2
+                                }
+                                sampleSize
+                            }
+                    synchronized(sourceDecoderLock) {
+                        decoder.decodeRegion(rect = sourceRect, sampleSize = sampleSize)
+                    }.also {
+                        it ?: Logger.e(TAG, "Failed to decodeRegion from source to create preview")
+                    }
+                } ?: return@decodePreview
+                if (!isActive) {
+                    imageBitmap.recycle()
+                    return@decodePreview
+                }
+                preview = imageBitmap
+            }
         }
 
-        loadPreviewJob = scope.launch {
-            val imageBitmap = withContext(Dispatchers.IO) {
-                previewProvider()
-            }
-            if (!isActive) {
-                onDisposePreview?.invoke(imageBitmap)
-                return@launch
-            }
-            preview = imageBitmap
-            val decoder = sourceDecoder
-            if ((decoder == null || decoder.width == 0 || decoder.height == 0) &&
-                (imageBitmap.width != 0 && imageBitmap.height != 0)
-            ) {
-                zoomState.contentAspectRatio = imageBitmap.width / imageBitmap.height.toFloat()
+        previewProvider?.let {
+            loadPreviewJob = scope.launch {
+                val imageBitmap = withContext(Dispatchers.IO) {
+                    it()
+                }
+                if (!isActive) {
+                    onDisposePreview?.invoke(imageBitmap)
+                    return@launch
+                }
+                preview = imageBitmap
+                val decoder = sourceDecoder
+                if ((decoder == null || decoder.width == 0 || decoder.height == 0) &&
+                    (imageBitmap.width != 0 && imageBitmap.height != 0)
+                ) {
+                    zoomState.contentAspectRatio = imageBitmap.width / imageBitmap.height.toFloat()
+                }
             }
         }
 
@@ -444,7 +487,11 @@ class SubsamplingState(
         preview?.let {
             // Try to fix Error, cannot access an invalid/free'd bitmap here!
             preview = null
-            onDisposePreview?.invoke(it)
+            if (previewProvider != null) {
+                onDisposePreview?.invoke(it)
+            } else {
+                it.recycle()
+            }
         }
 
         updateTilesJob?.cancel()
