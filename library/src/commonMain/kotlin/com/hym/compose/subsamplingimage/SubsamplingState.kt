@@ -420,7 +420,7 @@ class SubsamplingState(
             }
         }
 
-        updateTilesJob = scope.launch(Dispatchers.IO) {
+        updateTilesJob = scope.launch {
             var decodeTilesJob: Job? = null
 
             snapshotFlow { pendingTileList }
