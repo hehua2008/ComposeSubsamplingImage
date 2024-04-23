@@ -23,7 +23,7 @@ import okio.Source
 fun SubsamplingImage(
     zoomState: ZoomState,
     sourceProvider: suspend () -> Source,
-    previewProvider: suspend () -> ImageBitmap,
+    previewProvider: (suspend () -> ImageBitmap)? = null,
     sourceIntSize: IntSize = IntSize.Zero,
     imageBitmapRegionDecoderFactory: (SourceMarker) -> ImageBitmapRegionDecoder<*>?,
     modifier: Modifier = Modifier,
