@@ -28,6 +28,7 @@ import com.hym.compose.utils.emptyImmutableEqualityList
 import com.hym.compose.utils.mutableEqualityListOf
 import com.hym.compose.utils.roundToIntSize
 import com.hym.compose.zoom.ZoomState
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.IO
@@ -56,7 +57,7 @@ fun rememberSubsamplingState(
     previewProvider: (suspend () -> ImageBitmap)? = null,
     sourceIntSize: IntSize = IntSize.Zero, // Not as key
     imageBitmapRegionDecoderFactory: (SourceMarker) -> ImageBitmapRegionDecoder<*>?, // Not as key
-    onDisposePreview: ((preview: ImageBitmap) -> Unit)? = null // Not as key
+    onLoadEvent: ((SubsamplingState.LoadEvent) -> Unit)? = null // Not as key
 ): SubsamplingState {
     val scope = rememberCoroutineScope() // Not as key
     val subsamplingState = remember(zoomState, sourceProvider, previewProvider) {
@@ -66,7 +67,7 @@ fun rememberSubsamplingState(
             sourceProvider = sourceProvider,
             previewProvider = previewProvider,
             imageBitmapRegionDecoderFactory = imageBitmapRegionDecoderFactory,
-            onDisposePreview = onDisposePreview,
+            onLoadEvent = onLoadEvent,
             scope = scope
         )
     }
@@ -81,7 +82,7 @@ class SubsamplingState(
     private val sourceProvider: suspend () -> Source,
     private val previewProvider: (suspend () -> ImageBitmap)? = null,
     private val imageBitmapRegionDecoderFactory: (SourceMarker) -> ImageBitmapRegionDecoder<*>?,
-    private val onDisposePreview: ((preview: ImageBitmap) -> Unit)? = null,
+    private val onLoadEvent: ((LoadEvent) -> Unit)? = null,
     private val scope: CoroutineScope
 ) : RememberObserver {
     companion object {
@@ -92,6 +93,24 @@ class SubsamplingState(
         private const val TILE_OVERLAP_SCALE = 1f
 
         private const val PREVIEW_DEFAULT_SIZE = 1080 * 1920
+    }
+
+    sealed interface LoadEvent {
+        data object Loading : LoadEvent
+
+        data object PreviewLoaded : LoadEvent
+
+        data object SourceLoaded : LoadEvent
+
+        data class PreviewLoadError(val e: Throwable) : LoadEvent
+
+        data class SourceLoadError(val e: Throwable) : LoadEvent
+
+        data class TileLoadError(val e: Throwable) : LoadEvent
+
+        data class DisposePreview(val preview: ImageBitmap) : LoadEvent
+
+        data object Destroyed : LoadEvent
     }
 
     sealed interface Tile {
@@ -186,6 +205,7 @@ class SubsamplingState(
                         "Otherwise, the image cannot be displayed until the source image is loaded."
             )
         }
+        onLoadEvent?.invoke(LoadEvent.Loading)
     }
 
     private var source by mutableStateOf<SourceMarker?>(null)
@@ -349,15 +369,33 @@ class SubsamplingState(
 
     override fun onRemembered() {
         loadSourceJob = scope.launch {
-            val sourceMarker = withContext(Dispatchers.IO) {
-                SourceMarker(sourceProvider())
+            val sourceMarker = try {
+                withContext(Dispatchers.IO) {
+                    SourceMarker(sourceProvider())
+                }
+            } catch (e: CancellationException) {
+                return@launch
+            } catch (e: Throwable) {
+                onLoadEvent?.invoke(LoadEvent.SourceLoadError(e))
+                return@launch
             }
-            val decoder = withContext(Dispatchers.IO) {
-                imageBitmapRegionDecoderFactory(sourceMarker)
+
+            val decoder = try {
+                withContext(Dispatchers.IO) {
+                    imageBitmapRegionDecoderFactory(sourceMarker)
+                }
+            } catch (e: CancellationException) {
+                return@launch
+            } catch (e: Throwable) {
+                onLoadEvent?.invoke(LoadEvent.SourceLoadError(e))
+                return@launch
             }
+
             if (decoder == null) {
                 sourceMarker.source().closeQuietly()
-                Logger.e(TAG, "Failed to create ImageBitmapRegionDecoder")
+                val msg = "Failed to create ImageBitmapRegionDecoder"
+                Logger.e(TAG, msg)
+                onLoadEvent?.invoke(LoadEvent.SourceLoadError(Exception(msg)))
                 return@launch
             }
             if (!isActive) {
@@ -366,6 +404,7 @@ class SubsamplingState(
                 return@launch
             }
             source = sourceMarker
+            onLoadEvent?.invoke(LoadEvent.SourceLoaded)
             if (decoder.width != 0 && decoder.height != 0) {
                 sourceSize = IntSize(decoder.width, decoder.height)
                 zoomState.contentAspectRatio = decoder.width / decoder.height.toFloat()
@@ -403,14 +442,23 @@ class SubsamplingState(
 
         previewProvider?.let {
             loadPreviewJob = scope.launch {
-                val imageBitmap = withContext(Dispatchers.IO) {
-                    it()
+                val imageBitmap = try {
+                    withContext(Dispatchers.IO) {
+                        it()
+                    }
+                } catch (e: CancellationException) {
+                    return@launch
+                } catch (e: Throwable) {
+                    onLoadEvent?.invoke(LoadEvent.PreviewLoadError(e))
+                    return@launch
                 }
+
                 if (!isActive) {
-                    onDisposePreview?.invoke(imageBitmap)
+                    onLoadEvent?.invoke(LoadEvent.DisposePreview(imageBitmap))
                     return@launch
                 }
                 preview = imageBitmap
+                onLoadEvent?.invoke(LoadEvent.PreviewLoaded)
                 val decoder = sourceDecoder
                 if ((decoder == null || decoder.width == 0 || decoder.height == 0) &&
                     (imageBitmap.width != 0 && imageBitmap.height != 0)
@@ -456,7 +504,17 @@ class SubsamplingState(
                                     //clearReusableTiles()
                                     return@decode
                                 }
-                                tile.reusableTile.decodeBitmap(curSourceDecoder, sourceDecoderLock)
+                                try {
+                                    if (!tile.reusableTile.decodeBitmap(
+                                            curSourceDecoder,
+                                            sourceDecoderLock
+                                        )
+                                    ) {
+                                        onLoadEvent?.invoke(LoadEvent.TileLoadError(Exception("Get null")))
+                                    }
+                                } catch (e: Throwable) {
+                                    onLoadEvent?.invoke(LoadEvent.TileLoadError(e))
+                                }
                             }
                         }
 
@@ -488,7 +546,7 @@ class SubsamplingState(
             // Try to fix Error, cannot access an invalid/free'd bitmap here!
             preview = null
             if (previewProvider != null) {
-                onDisposePreview?.invoke(it)
+                onLoadEvent?.invoke(LoadEvent.DisposePreview(it))
             } else {
                 it.recycle()
             }
@@ -498,6 +556,8 @@ class SubsamplingState(
         // Try to fix Error, cannot access an invalid/free'd bitmap here!
         displayTiles = emptyImmutableEqualityList()
         clearReusableTiles()
+
+        onLoadEvent?.invoke(LoadEvent.Destroyed)
     }
 
     override fun onAbandoned() {
