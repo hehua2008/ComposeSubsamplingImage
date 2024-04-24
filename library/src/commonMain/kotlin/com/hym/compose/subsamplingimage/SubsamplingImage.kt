@@ -31,7 +31,7 @@ fun SubsamplingImage(
     contentScale: ContentScale = ContentScale.Fit,
     alpha: Float = 1f,
     colorFilter: ColorFilter? = null,
-    onDisposePreview: ((preview: ImageBitmap) -> Unit)? = null
+    onLoadEvent: ((SubsamplingState.LoadEvent) -> Unit)? = null
 ) {
     val subsamplingState = rememberSubsamplingState(
         zoomState = zoomState,
@@ -39,7 +39,7 @@ fun SubsamplingImage(
         previewProvider = previewProvider,
         sourceIntSize = sourceIntSize,
         imageBitmapRegionDecoderFactory = imageBitmapRegionDecoderFactory,
-        onDisposePreview = onDisposePreview
+        onLoadEvent = onLoadEvent
     )
 
     Layout(
