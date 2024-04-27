@@ -29,7 +29,9 @@ okio = "3.9.0"
 coil = "3.0.0-alpha06"
 
 # ktor
-ktor = "2.3.11"
+#ktor = "2.3.11" # Too much memory leak: https://youtrack.jetbrains.com/issue/KTOR-5049/Memory-leak-in-Darwin-engine
+#ktor = "3.0.0-beta-1" # Could not find "io.ktor:ktor-utils-cinterop-threadUtils": https://youtrack.jetbrains.com/issue/KTOR-6995/Could-not-find-io.ktorktor-utils-cinterop-threadUtils-on-KMP-project
+ktor = "3.0.0-beta-2-eap-932"
 
 # test
 junit = "4.13.2"
