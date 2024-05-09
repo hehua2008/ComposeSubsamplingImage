@@ -1,7 +1,7 @@
 package com.hym.compose.subsamplingimage
 
 import androidx.compose.ui.graphics.ImageBitmap
-import com.hym.compose.utils.SourceMarker
+import okio.Path
 
 /**
  * @author hehua2008
@@ -9,4 +9,4 @@ import com.hym.compose.utils.SourceMarker
  */
 expect fun ImageBitmap.recycle()
 
-expect val DefaultImageBitmapRegionDecoderFactory: (SourceMarker) -> ImageBitmapRegionDecoder<*>?
+expect val DefaultImageBitmapRegionDecoderFactory: (Path) -> ImageBitmapRegionDecoder<*>?

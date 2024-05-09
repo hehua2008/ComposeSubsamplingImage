@@ -21,9 +21,7 @@ import androidx.compose.ui.util.fastForEach
 import com.hym.compose.utils.Comparator
 import com.hym.compose.utils.ImmutableEqualityList
 import com.hym.compose.utils.Logger
-import com.hym.compose.utils.SourceMarker
 import com.hym.compose.utils.calculateScaledRect
-import com.hym.compose.utils.closeQuietly
 import com.hym.compose.utils.emptyImmutableEqualityList
 import com.hym.compose.utils.mutableEqualityListOf
 import com.hym.compose.utils.roundToIntSize
@@ -41,7 +39,6 @@ import kotlinx.coroutines.internal.synchronized
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
-import okio.Source
 import kotlin.math.roundToInt
 import kotlin.math.sqrt
 
@@ -53,20 +50,18 @@ import kotlin.math.sqrt
 @Composable
 fun rememberSubsamplingState(
     zoomState: ZoomState,
-    sourceProvider: suspend () -> Source,
+    sourceDecoderProvider: suspend () -> ImageBitmapRegionDecoder<*>?,
     previewProvider: (suspend () -> ImageBitmap)? = null,
     sourceIntSize: IntSize = IntSize.Zero, // Not as key
-    imageBitmapRegionDecoderFactory: (SourceMarker) -> ImageBitmapRegionDecoder<*>?, // Not as key
     onLoadEvent: ((SubsamplingState.LoadEvent) -> Unit)? = null // Not as key
 ): SubsamplingState {
     val scope = rememberCoroutineScope() // Not as key
-    val subsamplingState = remember(zoomState, sourceProvider, previewProvider) {
+    val subsamplingState = remember(zoomState, sourceDecoderProvider, previewProvider) {
         SubsamplingState(
             sourceIntSize = sourceIntSize,
             zoomState = zoomState,
-            sourceProvider = sourceProvider,
+            sourceDecoderProvider = sourceDecoderProvider,
             previewProvider = previewProvider,
-            imageBitmapRegionDecoderFactory = imageBitmapRegionDecoderFactory,
             onLoadEvent = onLoadEvent,
             scope = scope
         )
@@ -79,9 +74,8 @@ fun rememberSubsamplingState(
 class SubsamplingState(
     sourceIntSize: IntSize = IntSize.Zero,
     private val zoomState: ZoomState,
-    private val sourceProvider: suspend () -> Source,
+    private val sourceDecoderProvider: suspend () -> ImageBitmapRegionDecoder<*>?,
     private val previewProvider: (suspend () -> ImageBitmap)? = null,
-    private val imageBitmapRegionDecoderFactory: (SourceMarker) -> ImageBitmapRegionDecoder<*>?,
     private val onLoadEvent: ((LoadEvent) -> Unit)? = null,
     private val scope: CoroutineScope
 ) : RememberObserver {
@@ -208,9 +202,8 @@ class SubsamplingState(
         onLoadEvent?.invoke(LoadEvent.Loading)
     }
 
-    private var source by mutableStateOf<SourceMarker?>(null)
-    private var preview by mutableStateOf<ImageBitmap?>(null)
     private var sourceDecoder by mutableStateOf<ImageBitmapRegionDecoder<*>?>(null)
+    private var preview by mutableStateOf<ImageBitmap?>(null)
     private val sourceDecoderLock = SynchronizedObject()
     internal var sourceSize by mutableStateOf(sourceIntSize)
         private set
@@ -369,20 +362,9 @@ class SubsamplingState(
 
     override fun onRemembered() {
         loadSourceJob = scope.launch {
-            val sourceMarker = try {
-                withContext(Dispatchers.IO) {
-                    SourceMarker(sourceProvider())
-                }
-            } catch (e: CancellationException) {
-                return@launch
-            } catch (e: Throwable) {
-                onLoadEvent?.invoke(LoadEvent.SourceLoadError(e))
-                return@launch
-            }
-
             val decoder = try {
                 withContext(Dispatchers.IO) {
-                    imageBitmapRegionDecoderFactory(sourceMarker)
+                    sourceDecoderProvider()
                 }
             } catch (e: CancellationException) {
                 return@launch
@@ -392,18 +374,15 @@ class SubsamplingState(
             }
 
             if (decoder == null) {
-                sourceMarker.source().closeQuietly()
                 val msg = "Failed to create ImageBitmapRegionDecoder"
                 Logger.e(TAG, msg)
                 onLoadEvent?.invoke(LoadEvent.SourceLoadError(Exception(msg)))
                 return@launch
             }
             if (!isActive) {
-                sourceMarker.source().closeQuietly()
                 decoder.close()
                 return@launch
             }
-            source = sourceMarker
             onLoadEvent?.invoke(LoadEvent.SourceLoaded)
             if (decoder.width != 0 && decoder.height != 0) {
                 sourceSize = IntSize(decoder.width, decoder.height)
@@ -538,7 +517,6 @@ class SubsamplingState(
 
     override fun onForgotten() {
         loadSourceJob?.cancel()
-        source?.source()?.closeQuietly()
         sourceDecoder?.close()
 
         loadPreviewJob?.cancel()

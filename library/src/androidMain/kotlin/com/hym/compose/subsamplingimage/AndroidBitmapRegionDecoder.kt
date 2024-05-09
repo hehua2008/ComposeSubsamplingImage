@@ -7,8 +7,7 @@ import androidx.compose.ui.graphics.ImageBitmapConfig
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.toAndroidRect
 import androidx.compose.ui.unit.IntRect
-import com.hym.compose.utils.SourceMarker
-import com.hym.compose.utils.reusableRead
+import okio.Path
 
 /**
  * @author hehua2008
@@ -17,12 +16,9 @@ import com.hym.compose.utils.reusableRead
 class AndroidBitmapRegionDecoder(private val decoder: BitmapRegionDecoder) :
     ImageBitmapRegionDecoder<AndroidBitmapRegionDecoder> {
     companion object {
-        fun newInstance(sourceMarker: SourceMarker): AndroidBitmapRegionDecoder? {
-            return sourceMarker.reusableRead { source ->
-                val inputStream = source.inputStream()
-                val decoder = BitmapRegionDecoder.newInstance(inputStream, false)
-                if (decoder == null) null else AndroidBitmapRegionDecoder(decoder)
-            }
+        fun newInstance(path: Path): AndroidBitmapRegionDecoder {
+            val decoder = BitmapRegionDecoder.newInstance(path.normalized().toString(), false)
+            return AndroidBitmapRegionDecoder(decoder)
         }
     }
 
