@@ -10,10 +10,8 @@ import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.layout.Layout
 import androidx.compose.ui.layout.MeasurePolicy
 import androidx.compose.ui.unit.IntSize
-import com.hym.compose.utils.SourceMarker
 import com.hym.compose.zoom.ZoomState
 import com.hym.compose.zoom.zoom
-import okio.Source
 
 /**
  * @author hehua2008
@@ -22,10 +20,9 @@ import okio.Source
 @Composable
 fun SubsamplingImage(
     zoomState: ZoomState,
-    sourceProvider: suspend () -> Source,
+    sourceDecoderProvider: suspend () -> ImageBitmapRegionDecoder<*>?,
     previewProvider: (suspend () -> ImageBitmap)? = null,
     sourceIntSize: IntSize = IntSize.Zero,
-    imageBitmapRegionDecoderFactory: (SourceMarker) -> ImageBitmapRegionDecoder<*>?,
     modifier: Modifier = Modifier,
     alignment: Alignment = Alignment.Center,
     contentScale: ContentScale = ContentScale.Fit,
@@ -35,10 +32,9 @@ fun SubsamplingImage(
 ) {
     val subsamplingState = rememberSubsamplingState(
         zoomState = zoomState,
-        sourceProvider = sourceProvider,
+        sourceDecoderProvider = sourceDecoderProvider,
         previewProvider = previewProvider,
         sourceIntSize = sourceIntSize,
-        imageBitmapRegionDecoderFactory = imageBitmapRegionDecoderFactory,
         onLoadEvent = onLoadEvent
     )
 
