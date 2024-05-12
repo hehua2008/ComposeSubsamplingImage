@@ -2,18 +2,17 @@ package com.hym.compose.subsamplingimage
 
 import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.graphics.ImageBitmapConfig
+import androidx.compose.ui.graphics.asComposeImageBitmap
 import androidx.compose.ui.graphics.toComposeImageBitmap
 import androidx.compose.ui.unit.IntRect
 import com.hym.compose.utils.SourceMarker
 import com.hym.compose.utils.reusableRead
+import com.hym.compose.utils.toBitmap
 import okio.IOException
 import org.jetbrains.skia.Data
 import org.jetbrains.skia.IRect
 import org.jetbrains.skia.Image
-import org.jetbrains.skia.ImageInfo
 import org.jetbrains.skia.Pixmap
-import org.jetbrains.skia.SamplingMode
-import kotlin.math.roundToInt
 
 /**
  * @author hehua2008
@@ -50,36 +49,16 @@ class JvmImageBitmapRegionDecoder(private val pixMap: Pixmap) :
         }
         val subPixmap = Pixmap()
         val iRect = IRect.makeLTRB(rect.left, rect.top, rect.right, rect.bottom)
-        if (!pixMap.extractSubset(subPixmap, iRect)) {
-            subPixmap.close()
-            return null
-        }
-        if (sampleSize <= 1) {
-            subPixmap.use {
+        subPixmap.use {
+            if (!pixMap.extractSubset(subPixmap, iRect)) {
+                return null
+            } else {
                 Image.makeFromPixmap(it).use { image ->
-                    return image.toComposeImageBitmap()
+                    val scale = if (sampleSize <= 1) 1f else 1f / sampleSize
+                    val bitmap = image.toBitmap(scale)
+                    return bitmap.asComposeImageBitmap()
                 }
             }
-        }
-        val subSampleImageInfo = pixMap.info.run {
-            ImageInfo(
-                (rect.width / sampleSize.toFloat()).roundToInt(),
-                (rect.height / sampleSize.toFloat()).roundToInt(),
-                colorType,
-                colorAlphaType,
-                colorSpace
-            )
-        }
-        Data.makeUninitialized(subSampleImageInfo.computeMinByteSize()).use { subSampleData ->
-            Pixmap.make(subSampleImageInfo, subSampleData, subSampleImageInfo.minRowBytes)
-                .use { subSamplePixmap ->
-                    subPixmap.use {
-                        it.scalePixels(subSamplePixmap, SamplingMode.LINEAR)
-                    }
-                    Image.makeFromPixmap(subSamplePixmap).use { image ->
-                        return image.toComposeImageBitmap()
-                    }
-                }
         }
     }
 
