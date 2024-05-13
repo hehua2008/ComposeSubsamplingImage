@@ -25,6 +25,7 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Alignment
+import androidx.compose.ui.ExperimentalComposeUiApi
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clipToBounds
 import androidx.compose.ui.geometry.MutableRect
@@ -34,11 +35,13 @@ import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.geometry.toRect
 import androidx.compose.ui.graphics.TransformOrigin
 import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.input.pointer.HistoricalChange
 import androidx.compose.ui.input.pointer.PointerInputScope
 import androidx.compose.ui.input.pointer.changedToUpIgnoreConsumed
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.input.pointer.positionChanged
 import androidx.compose.ui.input.pointer.util.VelocityTracker
+import androidx.compose.ui.input.pointer.util.VelocityTrackerAddPointsFix
 import androidx.compose.ui.input.pointer.util.addPointerInputChange
 import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.unit.LayoutDirection
@@ -674,6 +677,7 @@ fun Modifier.zoom(
 private const val MAX_ZOOM_CHANGE = 1.08f
 private const val MIN_ZOOM_CHANGE = 1 / MAX_ZOOM_CHANGE
 
+@OptIn(ExperimentalComposeUiApi::class)
 suspend fun PointerInputScope.detectZoomGestures(
     onPreZoom: (Float) -> Float = { zoomChange -> zoomChange },
     onPrePan: (Offset) -> Offset = { panChange -> panChange },
@@ -683,6 +687,7 @@ suspend fun PointerInputScope.detectZoomGestures(
 ) {
     val maximumVelocity =
         Velocity(viewConfiguration.maximumFlingVelocity, viewConfiguration.maximumFlingVelocity)
+    VelocityTrackerAddPointsFix = false
     val velocityTracker = VelocityTracker()
 
     awaitEachGesture {
@@ -700,11 +705,23 @@ suspend fun PointerInputScope.detectZoomGestures(
             val canceled = event.changes.fastAny { it.isConsumed }
             if (canceled) break
 
+            val motionScale = onMotionScale()
+
             event.changes.fastForEach {
-                velocityTracker.addPointerInputChange(it)
+                velocityTracker.addPointerInputChange(
+                    it.copy(
+                        currentPosition = it.position * motionScale,
+                        previousPosition = it.previousPosition * motionScale,
+                        historical = it.historical.map { historicalChange ->
+                            HistoricalChange(
+                                historicalChange.uptimeMillis,
+                                historicalChange.position * motionScale
+                            )
+                        }
+                    )
+                )
             }
 
-            val motionScale = onMotionScale()
             val zoomChange = event.calculateZoom()
                 .coerceAtLeast(MIN_ZOOM_CHANGE)
                 .coerceAtMost(MAX_ZOOM_CHANGE)
@@ -752,7 +769,7 @@ suspend fun PointerInputScope.detectZoomGestures(
             }
         } while (event.changes.fastAny { it.pressed })
 
-        val velocity = velocityTracker.calculateVelocity(maximumVelocity) * onMotionScale()
+        val velocity = velocityTracker.calculateVelocity(maximumVelocity)
         onGestureEnd?.invoke(velocity)
     }
 }
