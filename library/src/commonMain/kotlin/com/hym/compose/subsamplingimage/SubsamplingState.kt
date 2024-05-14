@@ -28,7 +28,9 @@ import com.hym.compose.utils.roundToIntSize
 import com.hym.compose.zoom.ZoomState
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.DelicateCoroutinesApi
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.GlobalScope
 import kotlinx.coroutines.IO
 import kotlinx.coroutines.InternalCoroutinesApi
 import kotlinx.coroutines.Job
@@ -161,7 +163,12 @@ class SubsamplingState(
                 synchronized(lock) { // Check again to avoid repeated decoding
                     if (imageBitmap != null || isDestroyed) return true
                 }
-                val bitmap = decoder.decodeRegion(rect = sourceRect, sampleSize = sampleSize)
+                val bitmap = try {
+                    decoder.decodeRegion(rect = sourceRect, sampleSize = sampleSize)
+                } catch (e: Throwable) {
+                    Logger.e(TAG, "Failed to decodeRegion($sourceRect) from source", e)
+                    return false
+                }
                 if (bitmap == null) {
                     Logger.e(TAG, "Failed to decodeRegion($sourceRect) from source")
                     return false
@@ -406,7 +413,12 @@ class SubsamplingState(
                                 sampleSize
                             }
                     synchronized(sourceDecoderLock) {
-                        decoder.decodeRegion(rect = sourceRect, sampleSize = sampleSize)
+                        try {
+                            decoder.decodeRegion(rect = sourceRect, sampleSize = sampleSize)
+                        } catch (e: Throwable) {
+                            Logger.e(TAG, "Failed to decodeRegion from source to create preview", e)
+                            return@withContext null
+                        }
                     }.also {
                         it ?: Logger.e(TAG, "Failed to decodeRegion from source to create preview")
                     }
@@ -515,9 +527,20 @@ class SubsamplingState(
         }
     }
 
+    @OptIn(DelicateCoroutinesApi::class)
     override fun onForgotten() {
         loadSourceJob?.cancel()
-        sourceDecoder?.close()
+        sourceDecoder?.let {
+            GlobalScope.launch(Dispatchers.IO) {
+                synchronized(sourceDecoderLock) {
+                    try {
+                        it.close()
+                    } catch (e: Throwable) {
+                        Logger.e(TAG, "Failed to close sourceDecoder", e)
+                    }
+                }
+            }
+        }
 
         loadPreviewJob?.cancel()
         preview?.let {
