@@ -7,20 +7,19 @@ android-minSdk = "24"
 android-targetSdk = "34"
 
 # kotlin
-kotlin = "1.9.23"
+kotlin = "2.0.0"
 kotlinxCoroutines = "1.8.1"
 kotlinxImmutable = "0.3.7"
 kotlinxSerialization = "1.6.3"
-ksp = "1.9.23-1.0.20"
+ksp = "2.0.0-1.0.22"
 
 # androidx
-androidxLifecycle = "2.8.0"
+androidxLifecycle = "2.8.2"
 androidxPaging = "3.3.0"
 
 # compose
-composePlugin = "1.6.2"
-composeCompiler = "1.5.12"
-composeBom = "2024.05.00"
+composePlugin = "1.6.11"
+composeBom = "2024.06.00"
 
 # squareup
 okio = "3.9.0"
@@ -31,12 +30,12 @@ coil = "3.0.0-alpha06"
 # ktor
 #ktor = "2.3.11" # Too much memory leak: https://youtrack.jetbrains.com/issue/KTOR-5049/Memory-leak-in-Darwin-engine
 #ktor = "3.0.0-beta-1" # Could not find "io.ktor:ktor-utils-cinterop-threadUtils": https://youtrack.jetbrains.com/issue/KTOR-6995/Could-not-find-io.ktorktor-utils-cinterop-threadUtils-on-KMP-project
-ktor = "3.0.0-beta-2-eap-932"
+ktor = "2.3.12"
 
 # test
 junit = "4.13.2"
-androidJunit = "1.1.5"
-espressoCore = "3.5.1"
+androidJunit = "1.2.1"
+espressoCore = "3.6.1"
 
 [libraries]
 # test
@@ -56,7 +55,7 @@ kotlinx-serialization-json = { group = "org.jetbrains.kotlinx", name = "kotlinx-
 # androix
 androidx-annotation = { group = "androidx.annotation", name = "annotation", version = "1.8.0" }
 androidx-core-ktx = { group = "androidx.core", name = "core-ktx", version = "1.13.1" }
-androidx-appcompat = { group = "androidx.appcompat", name = "appcompat", version = "1.6.1" }
+androidx-appcompat = { group = "androidx.appcompat", name = "appcompat", version = "1.7.0" }
 androidx-lifecycle-runtime-ktx = { group = "androidx.lifecycle", name = "lifecycle-runtime-ktx", version.ref = "androidxLifecycle" }
 androidx-lifecycle-viewmodel-ktx = { group = "androidx.lifecycle", name = "lifecycle-viewmodel-ktx", version.ref = "androidxLifecycle" }
 androidx-lifecycle-viewmodel = { group = "androidx.lifecycle", name = "lifecycle-viewmodel", version.ref = "androidxLifecycle" }
@@ -104,4 +103,5 @@ napier = { group = "io.github.aakira", name = "napier", version = "2.7.1" }
 androidApplication = { id = "com.android.application", version.ref = "agp" }
 androidLibrary = { id = "com.android.library", version.ref = "agp" }
 jetbrainsCompose = { id = "org.jetbrains.compose", version.ref = "composePlugin" }
+composeCompiler = { id = "org.jetbrains.kotlin.plugin.compose", version.ref = "kotlin" }
 kotlinMultiplatform = { id = "org.jetbrains.kotlin.multiplatform", version.ref = "kotlin" }
